@@ -20,7 +20,6 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'talker = ' + package_name + '.test_publisher:main',
             'field_generator = ' + package_name + '.sfgenerator:main',
         ],
     },

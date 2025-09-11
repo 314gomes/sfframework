@@ -31,16 +31,56 @@ void ScalarField2DDisplay::processMessage(const sfframework_msgs::msg::ScalarFie
   
   this->resulting_mesh_->estimateVertexCount(n_vertices);
   
+  // Store vertices for normal calculation
+  std::vector<Ogre::Vector3> vertices;
+  vertices.reserve(msg.get()->data.size());
   for (std::size_t i = 0 ; i < msg.get()->data.size() ; ++i)
   {
     float x = (i % msg.get()->info.width) * msg.get()->info.resolution + msg.get()->info.origin.position.x;
     float y = (i / msg.get()->info.width) * msg.get()->info.resolution + msg.get()->info.origin.position.y;
     float z = msg.get()->data[i];
-    this->resulting_mesh_->addVertex(Ogre::Vector3(x, y, z));
+    vertices.emplace_back(x, y, z);
   }
-  
+
+  // Prepare normals
+  std::vector<Ogre::Vector3> normals(vertices.size(), Ogre::Vector3::ZERO);
+
+  // Compute face normals and accumulate
+  for (std::size_t i = 0 ; i < msg.get()->info.height - 1 ; ++i)
+  {
+    for (std::size_t j = 0 ; j < msg.get()->info.width - 1 ; ++j)
+    {
+      std::size_t v1 = i * msg.get()->info.width + j;
+      std::size_t v2 = v1 + 1;
+      std::size_t v3 = v1 + msg.get()->info.width;
+      std::size_t v4 = v3 + 1;
+
+      // First triangle (v1, v2, v3)
+      Ogre::Vector3 n1 = (vertices[v2] - vertices[v1]).crossProduct(vertices[v3] - vertices[v1]);
+      normals[v1] += n1;
+      normals[v2] += n1;
+      normals[v3] += n1;
+
+      // Second triangle (v2, v4, v3)
+      Ogre::Vector3 n2 = (vertices[v4] - vertices[v2]).crossProduct(vertices[v3] - vertices[v2]);
+      normals[v2] += n2;
+      normals[v4] += n2;
+      normals[v3] += n2;
+    }
+  }
+
+  // Normalize the normals
+  for (auto& n : normals)
+    n.normalise();
+
+  // Add vertices to the mesh (MeshShape does not support normals directly)
+  for (size_t i = 0; i < vertices.size(); ++i) {
+      this->resulting_mesh_->addVertex(vertices[i], normals[i]);
+  }
+
   this->resulting_mesh_->beginTriangles();
-  
+
+
   for (std::size_t i = 0 ; i < msg.get()->info.height - 1 ; ++i)
   {
     for (std::size_t j = 0 ; j < msg.get()->info.width - 1 ; ++j)

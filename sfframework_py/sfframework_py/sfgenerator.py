@@ -5,6 +5,11 @@ from sensor_msgs.msg import LaserScan
 from sensor_msgs.msg import PointCloud2
 import laser_geometry.laser_geometry as lg
 import sensor_msgs_py.point_cloud2 as pc2
+from sfframework_msgs.msg import ScalarField2D
+import tf2_sensor_msgs.tf2_sensor_msgs as tf2s
+import tf2_ros
+
+
 import numpy as np
 
 
@@ -33,7 +38,30 @@ class MinimalSubscriber(Node):
             self.pc2_msg_callback,
             10)
 
-        self.laser_subscription  # prevent unused variable warning
+        # TODO: unhardcode published topic parameters
+        self.current_field = ScalarField2D()
+
+        self.current_field.info.width = 25
+        self.current_field.info.height = 25
+        self.current_field.info.resolution = 0.5
+
+        self.current_field.info.origin.position.x = - (self.current_field.info.width * self.current_field.info.resolution) / 2.0
+        self.current_field.info.origin.position.y = - (self.current_field.info.height * self.current_field.info.resolution) / 2.0
+
+        self.current_field.data = np.zeros((self.current_field.info.height, self.current_field.info.width), dtype=np.float32).flatten().tolist()
+
+        self.current_field.header.frame_id = "robot_base_footprint"
+
+        self.field_publisher = self.create_publisher(
+            ScalarField2D,
+            '/sfframework/scalar_field',
+            10)
+        
+        # Initialize TF2
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        
 
     def laser_msg_callback(self, msg: LaserScan):
         pc2_msg = lg.LaserProjection().projectLaser(msg)
@@ -42,12 +70,50 @@ class MinimalSubscriber(Node):
 
     def pc2_msg_callback(self, msg: PointCloud2):
         # convert to scalar field
-        msg.data
+        # clear current field
+        self.current_field.data = np.zeros((self.current_field.info.height, self.current_field.info.width), dtype=np.float32).flatten().tolist()
+
+        # transform pointcloud to scalar field frame_id
+        field_frame_id = self.current_field.header.frame_id
+        pc2_frame_id = msg.header.frame_id
+
+        try:
+            # Lookup transform from pointcloud frame to field frame
+            current_transform = self.tf_buffer.lookup_transform(
+            target_frame=field_frame_id,
+            source_frame=pc2_frame_id,
+            time=rclpy.time.Time())
+        except Exception as e:
+            self.get_logger().warn(f"Transform lookup failed: {e}")
+            return
+
+        transformed_pc2 = tf2s.do_transform_cloud(msg, current_transform)
+
         
-        points = pc2.read_points_numpy(msg, field_names=("x", "y", "z"), skip_nans=True)
+
+        points = pc2.read_points_numpy(transformed_pc2, field_names=("x", "y", "z"), skip_nans=True)
+
         for point in points:
             x, y, z = point
+                
+            # get (closest) x and y cell
+            x_idx = int(
+                (x - self.current_field.info.origin.position.x) / self.current_field.info.resolution
+                )
+            y_idx = int(
+                (y - self.current_field.info.origin.position.y) / self.current_field.info.resolution
+                )
             
+            if x_idx < 0 or x_idx >= self.current_field.info.width or y_idx < 0 or y_idx >= self.current_field.info.height:
+                continue
+            
+            # update cell value 
+            self.current_field.data[y_idx * self.current_field.info.width + x_idx] = 1.0
+
+        self.current_field.header.stamp = self.get_clock().now().to_msg()
+        self.field_publisher.publish(self.current_field)
+
+
 
 def main(args=None):
     rclpy.init(args=args)

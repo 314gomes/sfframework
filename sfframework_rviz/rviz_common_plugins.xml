@@ -1,5 +1,0 @@
-<library path="ScalarField2DDisplay">
-  <class type="ScalarField2DDisplay::ScalarField2DDisplay" base_class_type="rviz_common::Display">
-    <description></description>
-  </class>
-</library>

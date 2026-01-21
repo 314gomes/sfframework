@@ -91,13 +91,11 @@ void SFGenerator::laser_topic_callback(const sensor_msgs::msg::LaserScan::Shared
       if (distance_sqrd < distance_threshold ){
         // Potential field decreases with distance_sqrd (e.g., Gaussian)
         double potential = A * std::exp(-distance_sqrd /  two_sigma_sqrd);
-        
-        grid_map_.at("potential", *iterator) += potential;
+        if(grid_map_.at("potential", *iterator) < potential){
+          grid_map_.at("potential", *iterator) = potential;
+        }
       }
-
     }
-
-
   }
 
 
@@ -110,7 +108,7 @@ void SFGenerator::laser_topic_callback(const sensor_msgs::msg::LaserScan::Shared
   grid_map_publisher_->publish(*message);
 
   auto tend = this->get_clock()->now();
-  RCLCPP_INFO(this->get_logger(), "Cycle time: %f ms", (tend - tstart).nanoseconds() / 1000000.0);
+  // RCLCPP_INFO(this->get_logger(), "Cycle time: %f ms", (tend - tstart).nanoseconds() / 1000000.0);
 
 }
 

@@ -4,22 +4,26 @@
 #include <string>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_sensor_msgs/tf2_sensor_msgs/tf2_sensor_msgs.hpp>
-
+#include <rclcpp/executors.hpp>
 #include <cmath>
 
 
 SFGenerator::SFGenerator()
   : Node("sfgenerator")
 {
+  this->lidar_callback_group_ = this->create_callback_group(
+      rclcpp::CallbackGroupType::MutuallyExclusive);
+
+  auto sub_opt = rclcpp::SubscriptionOptions();
+  sub_opt.callback_group = lidar_callback_group_;
+
   // Add parameters a and b with type float and default values
-  this->declare_parameter("A", 0.1);
+  this->declare_parameter("A", 0.001);
   this->declare_parameter("sigma", 0.5);
-
-
-  laser_subscription_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-    "/robot/front_laser/scan", 10,
-    std::bind(&SFGenerator::laser_topic_callback, this, std::placeholders::_1));
-
+  pointcloud2_subscription_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    "/robot/top_laser/points", 10,
+    std::bind(&SFGenerator::pointcloud2_topic_callback, this, std::placeholders::_1),
+    sub_opt);
   grid_map_publisher_ = this->create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
 
   grid_map_.setFrameId("robot_base_footprint");
@@ -36,7 +40,10 @@ SFGenerator::SFGenerator()
 }
 
 
-void SFGenerator::laser_topic_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg){
+void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg){
+  RCLCPP_INFO(this->get_logger(), "received pointcloud with %d points", msg->width * msg->height);
+  
+  
   auto A = this->get_parameter("A").as_double();
   auto two_sigma_sqrd = this->get_parameter("sigma").as_double();
   two_sigma_sqrd = two_sigma_sqrd * two_sigma_sqrd;
@@ -47,8 +54,7 @@ void SFGenerator::laser_topic_callback(const sensor_msgs::msg::LaserScan::Shared
 
   auto tstart = this->get_clock()->now();
 
-  this->projector_.projectLaser(*msg, cloud);
-
+  this->cloud = *msg;
   // iterate over every every gridmap cell
   for(grid_map::GridMapIterator iterator(grid_map_); !iterator.isPastEnd(); ++iterator) {
     grid_map_.at("potential", *iterator) = grid_map_.at("potential", *iterator) * 0.95;
@@ -91,9 +97,9 @@ void SFGenerator::laser_topic_callback(const sensor_msgs::msg::LaserScan::Shared
       if (distance_sqrd < distance_threshold ){
         // Potential field decreases with distance_sqrd (e.g., Gaussian)
         double potential = A * std::exp(-distance_sqrd /  two_sigma_sqrd);
-        if(grid_map_.at("potential", *iterator) < potential){
-          grid_map_.at("potential", *iterator) = potential;
-        }
+        // if(grid_map_.at("potential", *iterator) < potential){
+        grid_map_.at("potential", *iterator) = potential + grid_map_.at("potential", *iterator);
+        // }
       }
     }
   }
@@ -115,7 +121,15 @@ void SFGenerator::laser_topic_callback(const sensor_msgs::msg::LaserScan::Shared
 
 int main(int argc, char * argv[]){
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<SFGenerator>());
+
+  auto node = std::make_shared<SFGenerator>();
+  
+  rclcpp::executors::MultiThreadedExecutor executor;
+  
+  executor.add_node(node);
+  executor.spin();
+  // rclcpp::spin(std::make_shared<SFGenerator>());
+  // rclcpp::spin(std::make_shared<SFGenerator>(), executor);
   rclcpp::shutdown();
   return 0;
 }

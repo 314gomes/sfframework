@@ -70,17 +70,7 @@ Visualization Manager:
         Expand Link Details: false
         Expand Tree: false
         Link Tree Style: Links in Alphabetic Order
-        robot_back_left_visual_wheel_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         robot_back_left_wheel_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
-        robot_back_right_visual_wheel_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -133,11 +123,6 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
-        robot_front_left_visual_wheel_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         robot_front_left_wheel_link:
           Alpha: 1
           Show Axes: false
@@ -184,11 +169,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        robot_front_right_visual_wheel_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         robot_front_right_wheel_link:
           Alpha: 1
           Show Axes: false
@@ -213,6 +193,11 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
         robot_top_cover:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        robot_top_lidar_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -232,11 +217,7 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-        robot_back_left_visual_wheel_link:
-          Value: true
         robot_back_left_wheel_link:
-          Value: true
-        robot_back_right_visual_wheel_link:
           Value: true
         robot_back_right_wheel_link:
           Value: true
@@ -257,8 +238,6 @@ Visualization Manager:
         robot_front_laser_base_link:
           Value: true
         robot_front_laser_link:
-          Value: true
-        robot_front_left_visual_wheel_link:
           Value: true
         robot_front_left_wheel_link:
           Value: true
@@ -282,8 +261,6 @@ Visualization Manager:
           Value: true
         robot_front_rgbd_camera_link:
           Value: true
-        robot_front_right_visual_wheel_link:
-          Value: true
         robot_front_right_wheel_link:
           Value: true
         robot_imu_base_link:
@@ -296,6 +273,8 @@ Visualization Manager:
           Value: true
         robot_top_cover:
           Value: true
+        robot_top_lidar_link:
+          Value: true
       Marker Scale: 1
       Name: TF
       Show Arrows: true
@@ -304,11 +283,7 @@ Visualization Manager:
       Tree:
         robot_base_footprint:
           robot_base_link:
-            robot_back_left_visual_wheel_link:
-              {}
             robot_back_left_wheel_link:
-              {}
-            robot_back_right_visual_wheel_link:
               {}
             robot_back_right_wheel_link:
               {}
@@ -325,8 +300,6 @@ Visualization Manager:
             robot_front_laser_base_link:
               robot_front_laser_link:
                 {}
-            robot_front_left_visual_wheel_link:
-              {}
             robot_front_left_wheel_link:
               {}
             robot_front_rgbd_camera_base_link:
@@ -343,8 +316,6 @@ Visualization Manager:
                 robot_front_rgbd_camera_infra2_frame:
                   robot_front_rgbd_camera_infra2_optical_frame:
                     {}
-            robot_front_right_visual_wheel_link:
-              {}
             robot_front_right_wheel_link:
               {}
             robot_imu_base_link:
@@ -354,6 +325,8 @@ Visualization Manager:
               robot_rear_laser_link:
                 {}
             robot_top_cover:
+              {}
+            robot_top_lidar_link:
               {}
       Update Interval: 0
       Value: true
@@ -451,7 +424,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: false
+      Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Max Intensity: 0
@@ -471,7 +444,7 @@ Visualization Manager:
         Value: /robot/top_laser/points
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Class: grid_map_rviz_plugin/GridMap
@@ -501,7 +474,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: robot_base_link
+    Fixed Frame: robot_base_footprint
     Frame Rate: 30
   Name: root
   Tools:
@@ -584,5 +557,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1717
-  X: -124
+  X: 66
   Y: 181

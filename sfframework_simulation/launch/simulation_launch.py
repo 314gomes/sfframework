@@ -155,7 +155,8 @@ def launch_setup(context, params):
             ])
         def add_pointcloud(points_name):
             bridge_raw.extend([
-                ( f"/{robot_id}/{points_name}_lidar/scan/points", f"/{robot_id}/{points_name}_laser/points", "sensor_msgs/msg/PointCloud2", "gz.msgs.PointCloudPacked", "GZ_TO_ROS"),
+                # ( f"/{robot_id}/{points_name}_lidar/scan/points", f"/{robot_id}/{points_name}_laser/points", "sensor_msgs/msg/PointCloud2", "gz.msgs.PointCloudPacked", "GZ_TO_ROS"),
+                ( f"/{robot_id}_{points_name}_lidar/scan/points/points", f"/{robot_id}/{points_name}_laser/points", "sensor_msgs/msg/PointCloud2", "gz.msgs.PointCloudPacked", "GZ_TO_ROS"),
             ])
 
         def add_depth_camera(camera_name):
@@ -426,4 +427,3 @@ def generate_launch_description():
     ld.add_action(OpaqueFunction(function=launch_setup, args=[params]))
 
     return ld
-

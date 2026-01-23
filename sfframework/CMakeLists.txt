@@ -1,9 +1,15 @@
 cmake_minimum_required(VERSION 3.8)
 project(sfframework)
 
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic -O2)
 endif()
+
+# Set Open3D root directory
+set(Open3D_DIR "$ENV{HOME}/Documents/open3d-devel-linux-x86_64-cxx11-abi-0.19.0/lib/cmake/Open3D")
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
@@ -14,8 +20,16 @@ find_package(laser_geometry REQUIRED)
 find_package(grid_map_core REQUIRED)
 find_package(grid_map_ros REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(Open3D REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 add_executable(sfgenerator src/sfgenerator.cpp)
+
+target_link_libraries(sfgenerator
+Open3D::Open3D
+Eigen3::Eigen
+)
+
 ament_target_dependencies(sfgenerator
   rclcpp
   grid_map_msgs
@@ -25,7 +39,6 @@ ament_target_dependencies(sfgenerator
   grid_map_ros
   tf2_ros
 )
-
 
 install(TARGETS
   sfgenerator

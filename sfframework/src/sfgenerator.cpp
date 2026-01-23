@@ -6,6 +6,8 @@
 #include <tf2_sensor_msgs/tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 #include <rclcpp/executors.hpp>
 #include <cmath>
+#include <open3d/Open3D.h>
+#include <Eigen/Dense>
 
 
 SFGenerator::SFGenerator()
@@ -20,11 +22,17 @@ SFGenerator::SFGenerator()
   // Add parameters a and b with type float and default values
   this->declare_parameter("A", 0.001);
   this->declare_parameter("sigma", 0.5);
+
+  rclcpp::QoS qos_profile(rclcpp::KeepLast(1));
+  // qos_profile.best_effort();
+
   pointcloud2_subscription_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-    "/robot/top_laser/points", 10,
+    "/robot/top_laser/points",
+    qos_profile,
     std::bind(&SFGenerator::pointcloud2_topic_callback, this, std::placeholders::_1),
     sub_opt);
   grid_map_publisher_ = this->create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
+  intermediate_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("intermediate_pointcloud", 10);
 
   grid_map_.setFrameId("robot_base_footprint");
   grid_map_.setGeometry(grid_map::Length(5.0, 5.0), 0.10);
@@ -39,11 +47,65 @@ SFGenerator::SFGenerator()
 
 }
 
+void SFGenerator::rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, float dist_limit){
+    // Safety checks
+    if (ros_pc->height == 0 || ros_pc->width == 0) {
+        return;
+    }
+
+    // Pre-allocate memory to speed up the vector push_back
+    size_t num_points = ros_pc->height * ros_pc->width;
+    o3d_pc->points_.reserve(num_points);
+
+    // Create ROS 2 Iterators for x, y, z
+    sensor_msgs::PointCloud2ConstIterator<float> iter_x(*ros_pc, "x");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_y(*ros_pc, "y");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_z(*ros_pc, "z");
+
+    // Iterate and Convert
+    float dist_limit_sqrd = dist_limit * dist_limit;
+    for (size_t i = 0; i < num_points; ++i, ++iter_x, ++iter_y, ++iter_z) {
+        // filter out invalid points
+        if (Eigen::Vector2d(*iter_x, *iter_y).squaredNorm() <= dist_limit_sqrd && std::isfinite(*iter_x) && std::isfinite(*iter_y) && std::isfinite(*iter_z)) {
+            o3d_pc->points_.emplace_back(*iter_x, *iter_y, *iter_z);
+        }
+    }
+}
+
+void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, std::string frame_id)
+{
+  // Set the header
+  ros_pc->header.stamp = this->get_clock()->now();
+  ros_pc->header.frame_id = frame_id;
+
+  // Prepare the modifier 
+  sensor_msgs::PointCloud2Modifier modifier(*ros_pc);
+  
+  // Define ONLY x, y, z fields
+  modifier.setPointCloud2FieldsByString(1, "xyz");
+
+  // 3. Resize the ROS message to match the Open3D cloud size
+  modifier.resize(o3d_pc->points_.size());
+
+  // 4. Create Iterators
+  sensor_msgs::PointCloud2Iterator<float> iter_x(*ros_pc, "x");
+  sensor_msgs::PointCloud2Iterator<float> iter_y(*ros_pc, "y");
+  sensor_msgs::PointCloud2Iterator<float> iter_z(*ros_pc, "z");
+
+  // 5. Loop and Fill
+  for (const auto& point : o3d_pc->points_) {
+    *iter_x = point(0); // x
+    *iter_y = point(1); // y
+    *iter_z = point(2); // z
+
+    ++iter_x;
+    ++iter_y;
+    ++iter_z;
+  }
+}
 
 void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg){
-  RCLCPP_INFO(this->get_logger(), "received pointcloud with %d points", msg->width * msg->height);
-  
-  
+  auto intermediate_pc = std::make_shared<sensor_msgs::msg::PointCloud2>();
   auto A = this->get_parameter("A").as_double();
   auto two_sigma_sqrd = this->get_parameter("sigma").as_double();
   two_sigma_sqrd = two_sigma_sqrd * two_sigma_sqrd;
@@ -55,10 +117,6 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   auto tstart = this->get_clock()->now();
 
   this->cloud = *msg;
-  // iterate over every every gridmap cell
-  for(grid_map::GridMapIterator iterator(grid_map_); !iterator.isPastEnd(); ++iterator) {
-    grid_map_.at("potential", *iterator) = grid_map_.at("potential", *iterator) * 0.95;
-  }
 
   // Transform point cloud to target frame
   geometry_msgs::msg::TransformStamped transform_stamped;
@@ -73,18 +131,35 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     RCLCPP_WARN(this->get_logger(), "%s", ex.what());
     return;
   }
-
   tf2::doTransform(cloud, cloud, transform_stamped);
+
+  // float max_range = 2 * distance_threshold; // meters
+  float max_range = 10.0; 
+
+  auto o3d_pc = std::make_shared<open3d::geometry::PointCloud>();
+  rosToOpen3d(std::make_shared<sensor_msgs::msg::PointCloud2>(cloud), o3d_pc, max_range);
+  
+  //Remove statistical outliers
+  std::shared_ptr<open3d::geometry::PointCloud> filtered_pc;
+  std::tie(o3d_pc, std::ignore) = o3d_pc->RemoveStatisticalOutliers(30, 2.0);
+  
+  //Downsample the point cloud to improve data visualization and processing
+  // voxel_size=0.2
+  o3d_pc = o3d_pc->VoxelDownSample(0.2);
+
+  Open3dToRos(o3d_pc, intermediate_pc, grid_map_.getFrameId());
+
+  // Publish intermediate point cloud
+  this->intermediate_pointcloud_publisher_->publish(*intermediate_pc);
 
   // Reset potential field
   grid_map_.get("potential").setZero();
 
-  // Calculate potential field from point cloud
-  for (sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x"), iter_y(cloud, "y");
-       iter_x != iter_x.end(); ++iter_x, ++iter_y)
+  // Calculate potential field from o3d point cloud
+  for (const auto& point : o3d_pc->points_)
   {
-    // grid_map_.atPosition("potential", (*iter_x, *iter_y) = 1.0;
-    auto position = grid_map::Position(*iter_x, *iter_y);
+    // grid_map_.atPosition("potential", ...) = 1.0;
+    auto point_position_on_grid = grid_map::Position(point(0), point(1));
 
     // grid_map_.atPosition("potential", position) = 1.0;
     
@@ -92,14 +167,14 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     for(grid_map::GridMapIterator iterator(grid_map_); !iterator.isPastEnd(); ++iterator) {
       grid_map::Position cell_position(0, 0);
       grid_map_.getPosition(*iterator, cell_position);
-      double distance_sqrd = (position - cell_position).squaredNorm();
+      double distance_sqrd = (point_position_on_grid - cell_position).squaredNorm();
       
       if (distance_sqrd < distance_threshold ){
         // Potential field decreases with distance_sqrd (e.g., Gaussian)
         double potential = A * std::exp(-distance_sqrd /  two_sigma_sqrd);
-        // if(grid_map_.at("potential", *iterator) < potential){
-        grid_map_.at("potential", *iterator) = potential + grid_map_.at("potential", *iterator);
-        // }
+        if(grid_map_.at("potential", *iterator) < potential){
+          grid_map_.at("potential", *iterator) = potential;
+        }
       }
     }
   }

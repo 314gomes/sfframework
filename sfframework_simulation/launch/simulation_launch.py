@@ -417,7 +417,19 @@ def generate_launch_description():
                 package='sfframework',
                 executable='sfgenerator',
                 name='sfgenerator',
-                parameters=[{'use_sim_time': True}],
+                parameters=[{
+                    'use_sim_time': True,
+                    'filter_plugins': ['stat_outlier_removal', 'voxel_downsample'],
+                    'stat_outlier_removal': {
+                        'plugin': 'sfframework/StatisticalOutlierRemovalFilter',
+                        'nb_neighbors': 30,
+                        'std_ratio': 2.0,
+                    },
+                    'voxel_downsample': {
+                        'plugin': 'sfframework/VoxelDownSampleFilter',
+                        'voxel_size': 0.2,
+                    },
+                }],
                 output='screen'
             )
         ]

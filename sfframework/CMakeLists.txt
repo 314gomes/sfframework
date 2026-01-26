@@ -14,6 +14,7 @@ set(Open3D_DIR "$ENV{HOME}/Documents/open3d-devel-linux-x86_64-cxx11-abi-0.19.0/
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(pluginlib REQUIRED)
 find_package(grid_map_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(laser_geometry REQUIRED)
@@ -40,9 +41,40 @@ ament_target_dependencies(sfgenerator
   tf2_ros
 )
 
+# Build the filters plugin library
+add_library(sfframework_default_filters SHARED src/default_filters.cpp)
+
+target_link_libraries(sfframework_default_filters
+  Open3D::Open3D
+  Eigen3::Eigen
+)
+
+ament_target_dependencies(sfframework_default_filters
+  rclcpp
+  pluginlib
+  grid_map_core
+)
+
+target_include_directories(sfframework_default_filters PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 install(TARGETS
   sfgenerator
   DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS sfframework_default_filters
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
+install(FILES sfframework_plugins.xml
+  DESTINATION share/${PROJECT_NAME}
+)
+pluginlib_export_plugin_description_file(sfframework sfframework_plugins.xml)
+
 
 target_include_directories(sfgenerator PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

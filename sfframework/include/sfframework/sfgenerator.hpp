@@ -7,6 +7,8 @@
 #include <tf2_ros/buffer.h>
 #include <rclcpp/callback_group.hpp>
 #include <open3d/Open3D.h>
+#include <pluginlib/class_loader.hpp>
+#include "sfframework/filter_base.hpp"
 
 
 
@@ -33,4 +35,7 @@ class SFGenerator : public rclcpp::Node{
 
 		void rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, float dist_limit);
 		void Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, std::string frame_id);
+
+		pluginlib::ClassLoader<sfframework::FilterBase> filter_loader_;
+		std::vector<std::shared_ptr<sfframework::FilterBase>> filters_;
 	};

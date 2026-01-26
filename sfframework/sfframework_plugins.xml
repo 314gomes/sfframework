@@ -1,0 +1,12 @@
+<library path="sfframework_default_filters">
+  <class name="sfframework/StatisticalOutlierRemovalFilter" type="sfframework::StatisticalOutlierRemovalFilter" base_class_type="sfframework::FilterBase">
+    <description>
+      A filter that removes statistical outliers from a point cloud.
+    </description>
+  </class>
+  <class name="sfframework/VoxelDownSampleFilter" type="sfframework::VoxelDownSampleFilter" base_class_type="sfframework::FilterBase">
+    <description>
+      A filter that downsamples a point cloud using a voxel grid.
+    </description>
+  </class>
+</library>

@@ -195,10 +195,7 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   // Calculate potential field from o3d point cloud
   for (const auto& point : o3d_pc->points_)
   {
-    // grid_map_.atPosition("potential", ...) = 1.0;
     auto point_position_on_grid = grid_map::Position(point(0), point(1));
-    
-    // grid_map_.atPosition("potential", position) = 1.0;
     
     // iterate over every every gridmap cell
     for(grid_map::GridMapIterator iterator(grid_map_); !iterator.isPastEnd(); ++iterator) {
@@ -221,15 +218,11 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   
 
   // Set the timestamp and publish the grid map
-  // grid_map_.setTimestamp(this->now().nanoseconds());
   grid_map::Time timestamp(this->get_clock()->now().nanoseconds());
   grid_map_.setTimestamp(timestamp);
   auto message = grid_map::GridMapRosConverter::toMessage(grid_map_);
   // print gridmap position for debugging
   
-  // message.get()->info.pose.position.x = grid_map_.getPosition().x();
-  // message.get()->info.pose.position.y = grid_map_.getPosition().y();
-
   grid_map_publisher_->publish(*message);
   
   auto tend = this->get_clock()->now();
@@ -247,8 +240,6 @@ int main(int argc, char * argv[]){
   
   executor.add_node(node);
   executor.spin();
-  // rclcpp::spin(std::make_shared<SFGenerator>());
-  // rclcpp::spin(std::make_shared<SFGenerator>(), executor);
   rclcpp::shutdown();
   return 0;
 }

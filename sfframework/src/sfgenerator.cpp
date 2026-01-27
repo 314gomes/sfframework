@@ -4,6 +4,7 @@
 #include <string>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_sensor_msgs/tf2_sensor_msgs/tf2_sensor_msgs.hpp>
+#include <tf2_ros/transform_broadcaster.h>
 #include <rclcpp/executors.hpp>
 #include <cmath>
 #include <open3d/Open3D.h>
@@ -23,6 +24,9 @@ SFGenerator::SFGenerator()
   // Add parameters a and b with type float and default values
   this->declare_parameter("A", 0.001);
   this->declare_parameter("sigma", 0.5);
+
+  this->declare_parameter("gridmap_frame_id", "robot_odom");
+  this->declare_parameter("gridmap_center_target_frame_id", "robot_base_footprint");
 
   auto declared_classes = filter_loader_.getDeclaredClasses();
   RCLCPP_INFO(this->get_logger(), "[%s] Querying available filter plugins:", this->get_name());
@@ -50,14 +54,13 @@ SFGenerator::SFGenerator()
   // qos_profile.best_effort();
 
   pointcloud2_subscription_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-    "/robot/top_laser/points",
+    "/points",
     qos_profile,
     std::bind(&SFGenerator::pointcloud2_topic_callback, this, std::placeholders::_1),
     sub_opt);
   grid_map_publisher_ = this->create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
   intermediate_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("intermediate_pointcloud", 10);
 
-  grid_map_.setFrameId("robot_base_footprint");
   grid_map_.setGeometry(grid_map::Length(5.0, 5.0), 0.10);
   grid_map_.add("potential", 0);
 
@@ -139,74 +142,98 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   
   this->cloud = *msg;
   
-  // Transform point cloud to target frame
-  geometry_msgs::msg::TransformStamped transform_stamped;
+  grid_map_.setFrameId(this->get_parameter("gridmap_frame_id").as_string());
+
+  // Set gridmap position 
+  geometry_msgs::msg::TransformStamped tf_grid_frame_to_grid_target;
   try{
-    // transform_stamped = tf_buffer_.lookupTransform(
-      transform_stamped = tf_buffer_.get()->lookupTransform(
-        grid_map_.getFrameId(),  // target frame
-        cloud.header.frame_id,  // source frame
-        tf2::TimePointZero);  // get the latest available
-      }
-      catch (tf2::TransformException & ex) {
-        RCLCPP_WARN(this->get_logger(), "%s", ex.what());
-        return;
-      }
-      tf2::doTransform(cloud, cloud, transform_stamped);
-      
-      // float max_range = 2 * distance_threshold; // meters
-      float max_range = 10.0; 
-      
-      auto o3d_pc = std::make_shared<open3d::geometry::PointCloud>();
-      rosToOpen3d(std::make_shared<sensor_msgs::msg::PointCloud2>(cloud), o3d_pc, max_range);
-      
-      for (const auto & filter : filters_) {
-        o3d_pc = filter->filter(o3d_pc);
-      }
-      
-      Open3dToRos(o3d_pc, intermediate_pc, grid_map_.getFrameId());
+    tf_grid_frame_to_grid_target = tf_buffer_.get()->lookupTransform(
+      this->get_parameter("gridmap_frame_id").as_string(),  // source frame
+    this->get_parameter("gridmap_center_target_frame_id").as_string(),  // target frame
+    tf2::TimePointZero);  // get the latest available
+  }
+  catch (tf2::TransformException & ex) {
+    RCLCPP_WARN(this->get_logger(), "%s", ex.what());
+    return;
+  }
+  grid_map_.setPosition(grid_map::Position(tf_grid_frame_to_grid_target.transform.translation.x, tf_grid_frame_to_grid_target.transform.translation.y));
+
+  // Transform point cloud to girdmap frame
+  geometry_msgs::msg::TransformStamped tf_cloud_to_grid_frame;
+  try{
+    tf_cloud_to_grid_frame = tf_buffer_.get()->lookupTransform(
+    this->get_parameter("gridmap_frame_id").as_string(),  // target frame
+    cloud.header.frame_id,  // source frame
+    tf2::TimePointZero);  // get the latest available
+  }
+  catch (tf2::TransformException & ex) {
+    RCLCPP_WARN(this->get_logger(), "%s", ex.what());
+    return;
+  }
+  tf2::doTransform(cloud, cloud, tf_cloud_to_grid_frame);
+  // float max_range = 2 * distance_threshold; // meters
+  float max_range = 10.0; 
+  
+  auto o3d_pc = std::make_shared<open3d::geometry::PointCloud>();
+  rosToOpen3d(std::make_shared<sensor_msgs::msg::PointCloud2>(cloud), o3d_pc, max_range);
+  
+  for (const auto & filter : filters_) {
+    o3d_pc = filter->filter(o3d_pc);
+  }
+  
+  Open3dToRos(o3d_pc, intermediate_pc, this->get_parameter("gridmap_frame_id").as_string());
+
+  // Publish intermediate point cloud
+  this->intermediate_pointcloud_publisher_->publish(*intermediate_pc);
+  
+  // Reset potential field
+  grid_map_.get("potential").setZero();
+  
+  // Calculate potential field from o3d point cloud
+  for (const auto& point : o3d_pc->points_)
+  {
+    // grid_map_.atPosition("potential", ...) = 1.0;
+    auto point_position_on_grid = grid_map::Position(point(0), point(1));
     
-      // Publish intermediate point cloud
-      this->intermediate_pointcloud_publisher_->publish(*intermediate_pc);
+    // grid_map_.atPosition("potential", position) = 1.0;
+    
+    // iterate over every every gridmap cell
+    for(grid_map::GridMapIterator iterator(grid_map_); !iterator.isPastEnd(); ++iterator) {
+      grid_map::Position cell_position(0, 0);
+      grid_map_.getPosition(*iterator, cell_position);
+      double distance_sqrd = (point_position_on_grid - cell_position).squaredNorm();
       
-      // Reset potential field
-      grid_map_.get("potential").setZero();
-      
-      // Calculate potential field from o3d point cloud
-      for (const auto& point : o3d_pc->points_)
-      {
-        // grid_map_.atPosition("potential", ...) = 1.0;
-        auto point_position_on_grid = grid_map::Position(point(0), point(1));
-        
-        // grid_map_.atPosition("potential", position) = 1.0;
-        
-        // iterate over every every gridmap cell
-        for(grid_map::GridMapIterator iterator(grid_map_); !iterator.isPastEnd(); ++iterator) {
-          grid_map::Position cell_position(0, 0);
-          grid_map_.getPosition(*iterator, cell_position);
-          double distance_sqrd = (point_position_on_grid - cell_position).squaredNorm();
-          
-          if (distance_sqrd < distance_threshold ){
-            // Potential field decreases with distance_sqrd (e.g., Gaussian)
-            double potential = A * std::exp(-distance_sqrd /  two_sigma_sqrd);
-            if(grid_map_.at("potential", *iterator) < potential){
-              grid_map_.at("potential", *iterator) = potential;
-            }
-          }
+      if (distance_sqrd < distance_threshold ){
+        // Potential field decreases with distance_sqrd (e.g., Gaussian)
+        double potential = A * std::exp(-distance_sqrd /  two_sigma_sqrd);
+        if(grid_map_.at("potential", *iterator) < potential){
+          grid_map_.at("potential", *iterator) = potential;
         }
       }
-      
-      // Set the timestamp and publish the grid map
-      // grid_map_.setTimestamp(this->now().nanoseconds());
-      grid_map::Time timestamp(this->get_clock()->now().nanoseconds());
-      grid_map_.setTimestamp(timestamp);
-      auto message = grid_map::GridMapRosConverter::toMessage(grid_map_);
-      grid_map_publisher_->publish(*message);
-      
-      auto tend = this->get_clock()->now();
-      // RCLCPP_INFO(this->get_logger(), "Cycle time: %f ms", (tend - tstart).nanoseconds() / 1000000.0);
-      
     }
+  }
+  
+  //sleep for 3 seconds
+  std::this_thread::sleep_for(std::chrono::seconds(3));
+  
+
+  // Set the timestamp and publish the grid map
+  // grid_map_.setTimestamp(this->now().nanoseconds());
+  grid_map::Time timestamp(this->get_clock()->now().nanoseconds());
+  grid_map_.setTimestamp(timestamp);
+  auto message = grid_map::GridMapRosConverter::toMessage(grid_map_);
+  // print gridmap position for debugging
+  RCLCPP_INFO(this->get_logger(), "Grid map position: x=%f, y=%f", grid_map_.getPosition().x(), grid_map_.getPosition().y());
+  
+  message.get()->info.pose.position.x = grid_map_.getPosition().x();
+  message.get()->info.pose.position.y = grid_map_.getPosition().y();
+
+  grid_map_publisher_->publish(*message);
+  
+  auto tend = this->get_clock()->now();
+  // RCLCPP_INFO(this->get_logger(), "Cycle time: %f ms", (tend - tstart).nanoseconds() / 1000000.0);
+  
+}
     
     
 int main(int argc, char * argv[]){

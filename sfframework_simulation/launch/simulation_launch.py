@@ -196,21 +196,13 @@ def launch_setup(context, params):
         # Load the YAML file
         with open(yaml_path, 'r') as f:
 
-            # Read the file content
-            content = f.read()
-            # Remove the string "---\n/**:" if it exists at the beginning
-            if content.startswith('---\n/**:'):
-                content = content[len('---\n/**:'):]
-            # Move file pointer back to start for yaml.safe_load
-            f.seek(0)
-            f = tempfile.SpooledTemporaryFile(mode='w+')
-            f.write(content)
-            f.seek(0)
-
             try:
                 data = yaml.safe_load(f)
             except Exception as e:
                 raise RuntimeError(f"Failed to parse YAML file '{yaml_path}': {e}")
+
+        if data is not None and '/**' in data:
+            data = data['/**']
 
         for controller in data:
             existing_controllers.append(controller)
@@ -302,6 +294,19 @@ def launch_setup(context, params):
         parameters=[{'use_sim_time': True}],
         condition=IfCondition(params['run_rviz'])
     ))
+
+    # Relay the custom tf_odometry topic to /tf so RViz and other nodes can use it
+    ret.append(Node(
+        package='topic_tools',
+        executable='relay',
+        name='tf_odometry_relay',
+        output='screen',
+        arguments=[
+            ['/', params['robot_id'], '/robotnik_base_control/tf_odometry'],
+            '/tf'
+        ],
+    ))
+
     return ret
 
 
@@ -417,6 +422,10 @@ def generate_launch_description():
                 package='sfframework',
                 executable='sfgenerator',
                 name='sfgenerator',
+                namespace = params['robot_id'],
+                remappings = [
+                    ('/points', ['/', params['robot_id'], '/top_laser/points'])
+                ],
                 parameters=[{
                     'use_sim_time': True,
                     'filter_plugins': ['stat_outlier_removal', 'voxel_downsample'],

@@ -26,7 +26,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: FrontLaserScan
+    SyncSource: Top Laser PointCloud2
   - Class: rviz_plugin_tutorials/Teleop
     Name: Teleop
     Topic: robotnik_base_control/cmd_vel_unstamped
@@ -266,6 +266,8 @@ Visualization Manager:
           Value: true
         robot_imu_link:
           Value: true
+        robot_odom:
+          Value: true
         robot_rear_laser_base_link:
           Value: true
         robot_rear_laser_link:
@@ -327,6 +329,8 @@ Visualization Manager:
               {}
             robot_top_lidar_link:
               {}
+        robot_odom:
+          {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -467,7 +471,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /grid_map
+        Value: /robot/grid_map
       Use Rainbow: true
       Value: true
     - Alpha: 1
@@ -488,7 +492,7 @@ Visualization Manager:
       Max Intensity: 4096
       Min Color: 0; 0; 0
       Min Intensity: 0
-      Name: Intermediate PointCloud2
+      Name: Filtered PointCloud2
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 7
@@ -499,7 +503,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /intermediate_pointcloud
+        Value: /robot/filtered_pointcloud
       Use Fixed Frame: true
       Use rainbow: true
       Value: true

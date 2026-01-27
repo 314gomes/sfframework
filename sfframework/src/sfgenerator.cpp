@@ -25,6 +25,8 @@ SFGenerator::SFGenerator()
   this->declare_parameter("A", 0.001);
   this->declare_parameter("sigma", 0.5);
 
+  this->declare_parameter("publish_filtered_pointcloud", true);
+  
   this->declare_parameter("gridmap_frame_id", "robot_odom");
   this->declare_parameter("gridmap_center_target_frame_id", "robot_base_footprint");
 
@@ -59,7 +61,7 @@ SFGenerator::SFGenerator()
     std::bind(&SFGenerator::pointcloud2_topic_callback, this, std::placeholders::_1),
     sub_opt);
   grid_map_publisher_ = this->create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
-  intermediate_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("intermediate_pointcloud", 10);
+  filtered_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("filtered_pointcloud", 10);
 
   grid_map_.setGeometry(grid_map::Length(5.0, 5.0), 0.10);
   grid_map_.add("potential", 0);
@@ -108,15 +110,12 @@ void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud
   // Define ONLY x, y, z fields
   modifier.setPointCloud2FieldsByString(1, "xyz");
 
-  // 3. Resize the ROS message to match the Open3D cloud size
   modifier.resize(o3d_pc->points_.size());
 
-  // 4. Create Iterators
   sensor_msgs::PointCloud2Iterator<float> iter_x(*ros_pc, "x");
   sensor_msgs::PointCloud2Iterator<float> iter_y(*ros_pc, "y");
   sensor_msgs::PointCloud2Iterator<float> iter_z(*ros_pc, "z");
 
-  // 5. Loop and Fill
   for (const auto& point : o3d_pc->points_) {
     *iter_x = point(0); // x
     *iter_y = point(1); // y
@@ -129,7 +128,6 @@ void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud
 }
 
 void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg){
-  auto intermediate_pc = std::make_shared<sensor_msgs::msg::PointCloud2>();
   auto A = this->get_parameter("A").as_double();
   auto two_sigma_sqrd = this->get_parameter("sigma").as_double();
   two_sigma_sqrd = two_sigma_sqrd * two_sigma_sqrd;
@@ -181,10 +179,15 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     o3d_pc = filter->filter(o3d_pc);
   }
   
-  Open3dToRos(o3d_pc, intermediate_pc, this->get_parameter("gridmap_frame_id").as_string());
+  
+  // publish filtered point cloud if parameter is set
+  if (this->get_parameter("publish_filtered_pointcloud").as_bool()) {
+    auto intermediate_pc = std::make_shared<sensor_msgs::msg::PointCloud2>();
 
+    Open3dToRos(o3d_pc, intermediate_pc, this->get_parameter("gridmap_frame_id").as_string());
+    this->filtered_pointcloud_publisher_->publish(*intermediate_pc);
+  }
   // Publish intermediate point cloud
-  this->intermediate_pointcloud_publisher_->publish(*intermediate_pc);
   
   // Reset potential field
   grid_map_.get("potential").setZero();
@@ -213,8 +216,8 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     }
   }
   
-  //sleep for 3 seconds
-  std::this_thread::sleep_for(std::chrono::seconds(3));
+  //sleep for 3 seconds for debugging high latency
+  // std::this_thread::sleep_for(std::chrono::seconds(3));
   
 
   // Set the timestamp and publish the grid map
@@ -223,10 +226,9 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   grid_map_.setTimestamp(timestamp);
   auto message = grid_map::GridMapRosConverter::toMessage(grid_map_);
   // print gridmap position for debugging
-  RCLCPP_INFO(this->get_logger(), "Grid map position: x=%f, y=%f", grid_map_.getPosition().x(), grid_map_.getPosition().y());
   
-  message.get()->info.pose.position.x = grid_map_.getPosition().x();
-  message.get()->info.pose.position.y = grid_map_.getPosition().y();
+  // message.get()->info.pose.position.x = grid_map_.getPosition().x();
+  // message.get()->info.pose.position.y = grid_map_.getPosition().y();
 
   grid_map_publisher_->publish(*message);
   

@@ -426,19 +426,13 @@ def generate_launch_description():
                 remappings = [
                     ('/points', ['/', params['robot_id'], '/top_laser/points'])
                 ],
-                parameters=[{
-                    'use_sim_time': True,
-                    'filter_plugins': ['stat_outlier_removal', 'voxel_downsample'],
-                    'stat_outlier_removal': {
-                        'plugin': 'sfframework/StatisticalOutlierRemovalFilter',
-                        'nb_neighbors': 30,
-                        'std_ratio': 2.0,
-                    },
-                    'voxel_downsample': {
-                        'plugin': 'sfframework/VoxelDownSampleFilter',
-                        'voxel_size': 0.2,
-                    },
-                }],
+                parameters=[
+                    os.path.join(
+                        get_package_share_directory('sfframework_simulation'),
+                        'config',
+                        'sfgenerator_params.yaml'
+                    )
+                ],
                 output='screen'
             )
         ]

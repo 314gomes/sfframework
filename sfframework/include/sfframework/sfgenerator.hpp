@@ -9,7 +9,7 @@
 #include <open3d/Open3D.h>
 #include <pluginlib/class_loader.hpp>
 #include "sfframework/filter_base.hpp"
-
+#include "sfframework/partitioning_strategy.hpp"
 
 
 class SFGenerator : public rclcpp::Node{
@@ -32,10 +32,11 @@ class SFGenerator : public rclcpp::Node{
 		std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
 		std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-
 		void rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, float dist_limit);
 		void Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, std::string frame_id);
 
 		pluginlib::ClassLoader<sfframework::FilterBase> filter_loader_;
+		pluginlib::ClassLoader<sfframework::PartitioningStrategy> partitioner_loader_;
 		std::vector<std::shared_ptr<sfframework::FilterBase>> filters_;
+		std::vector<std::shared_ptr<sfframework::PartitioningStrategy>> partitioners_;
 	};

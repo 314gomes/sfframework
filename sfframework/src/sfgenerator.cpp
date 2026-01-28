@@ -13,7 +13,8 @@
 
 SFGenerator::SFGenerator()
   : Node("sfgenerator"),
-    filter_loader_("sfframework", "sfframework::FilterBase")
+    filter_loader_("sfframework", "sfframework::FilterBase"),
+    partitioner_loader_("sfframework", "sfframework::PartitioningStrategy")
 {
   this->lidar_callback_group_ = this->create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -49,6 +50,28 @@ SFGenerator::SFGenerator()
       RCLCPP_INFO(this->get_logger(), "Successfully loaded filter plugin '%s' of type '%s'", name.c_str(), type.c_str());
     } catch (pluginlib::PluginlibException & ex) {
       RCLCPP_ERROR(this->get_logger(), "The plugin failed to load for filter '%s'. Error: %s", name.c_str(), ex.what());
+    }
+  } 
+  
+  auto partitioner_declared_classes = partitioner_loader_.getDeclaredClasses();
+  RCLCPP_INFO(this->get_logger(), "[%s] Querying available partitioner plugins:", this->get_name());
+  for (const auto & cls : partitioner_declared_classes) {
+    RCLCPP_INFO(this->get_logger(), "  %s", cls.c_str());
+  }
+
+  this->declare_parameter("partitioner_plugins", std::vector<std::string>());
+  auto partitioner_names = this->get_parameter("partitioner_plugins").as_string_array();
+
+  for (const auto & name : partitioner_names) {
+    this->declare_parameter(name + ".plugin", "");
+    std::string type = this->get_parameter(name + ".plugin").as_string();
+    try {
+      auto partitioner = partitioner_loader_.createSharedInstance(type);
+      partitioner->initialize(this, name);
+      partitioners_.push_back(partitioner);
+      RCLCPP_INFO(this->get_logger(), "Successfully loaded partitioner plugin '%s' of type '%s'", name.c_str(), type.c_str());
+    } catch (pluginlib::PluginlibException & ex) {
+      RCLCPP_ERROR(this->get_logger(), "The plugin failed to load for partitioner '%s'. Error: %s", name.c_str(), ex.what());
     }
   }
 
@@ -174,11 +197,11 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   
   auto o3d_pc = std::make_shared<open3d::geometry::PointCloud>();
   rosToOpen3d(std::make_shared<sensor_msgs::msg::PointCloud2>(cloud), o3d_pc, max_range);
-  
+
+  // run every filter from list of plugins in order
   for (const auto & filter : filters_) {
     o3d_pc = filter->filter(o3d_pc);
   }
-  
   
   // publish filtered point cloud if parameter is set
   if (this->get_parameter("publish_filtered_pointcloud").as_bool()) {
@@ -187,8 +210,16 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     Open3dToRos(o3d_pc, intermediate_pc, this->get_parameter("gridmap_frame_id").as_string());
     this->filtered_pointcloud_publisher_->publish(*intermediate_pc);
   }
-  // Publish intermediate point cloud
   
+  // run every partitioner from list of plugins in order
+  PartitioningContext context;
+  context.cloud = o3d_pc;
+  for (const auto & partitioner : partitioners_) {
+    partitioner->process(context);
+  }
+
+  o3d_pc = o3d_pc->SelectByIndex(context.clusters_registry["ground"][0].indices, true);
+
   // Reset potential field
   grid_map_.get("potential").setZero();
   

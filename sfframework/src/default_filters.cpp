@@ -9,9 +9,10 @@ class StatisticalOutlierRemovalFilter : public FilterBase
 public:
   void initialize(const std::string & name, rclcpp::Node * node) override
   {
+    // TODO: move this to hpp file and call the parent constructor... will require changing the name of initialize() I think?
     name_ = name;
     node_ = node;
-    // Default values matching the original code
+
     node_->declare_parameter(name_ + ".nb_neighbors", 30);
     node_->declare_parameter(name_ + ".std_ratio", 2.0);
   }
@@ -26,6 +27,8 @@ public:
     std::tie(output, std::ignore) = input->RemoveStatisticalOutliers(nb_neighbors, std_ratio);
     return output;
   }
+
+// todo: move this to hpp file
 
 private:
   std::string name_;

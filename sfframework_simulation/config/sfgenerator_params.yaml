@@ -10,3 +10,6 @@
       voxel_downsample:
         plugin: 'sfframework/VoxelDownSampleFilter'
         voxel_size: 0.2
+      partitioner_plugins: ['ransac']
+      ransac:
+        plugin: 'sfframework/RansacSegmentation'

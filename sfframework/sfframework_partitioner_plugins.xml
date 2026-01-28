@@ -1,0 +1,7 @@
+<library path="sfframework_default_partitioners">
+  <class name="sfframework/RansacSegmentation" type="sfframework::RansacSegmentation" base_class_type="sfframework::PartitioningStrategy">
+    <description>
+      A filter that removes statistical outliers from a point cloud.
+    </description>
+  </class>
+</library>

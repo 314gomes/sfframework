@@ -2,6 +2,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <cstring>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <tf2_sensor_msgs/tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -27,7 +28,26 @@ SFGenerator::SFGenerator()
   this->declare_parameter("sigma", 0.5);
 
   this->declare_parameter("publish_filtered_pointcloud", true);
+  this->declare_parameter("partitioned_pointcloud_visualization.publish", true);
   
+  this->declare_parameter("partitioned_pointcloud_visualization.display_inliers", true);
+  this->declare_parameter("partitioned_pointcloud_visualization.display_outliers", true);
+
+  this->declare_parameter("partitioned_pointcloud_visualization.inliers_considered", std::vector<std::string>());
+  
+  // define parameter for min and max color for each inlier id
+  auto tags = this->get_parameter("partitioned_pointcloud_visualization.inliers_considered").as_string_array();
+  // tags.push_back("outliers");
+  tags.insert(tags.begin(), "outliers");
+
+  for (const auto & tag : tags) {
+    // print tags available for debugging
+    RCLCPP_INFO(this->get_logger(), "Declaring parameters for tag: %s", tag.c_str());
+    this->declare_parameter("partitioned_pointcloud_visualization.colors." + tag + ".min", std::vector<int64_t>{255, 255, 255});
+    this->declare_parameter("partitioned_pointcloud_visualization.colors." + tag + ".max", this->get_parameter("partitioned_pointcloud_visualization.colors.outliers.min").as_integer_array());
+  
+  }
+
   this->declare_parameter("gridmap_frame_id", "robot_odom");
   this->declare_parameter("gridmap_center_target_frame_id", "robot_base_footprint");
 
@@ -85,6 +105,7 @@ SFGenerator::SFGenerator()
     sub_opt);
   grid_map_publisher_ = this->create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
   filtered_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("filtered_pointcloud", 10);
+  this->partitioned_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("partitioned_pointcloud", 10);
 
   grid_map_.setGeometry(grid_map::Length(5.0, 5.0), 0.10);
   grid_map_.add("potential", 0);
@@ -130,8 +151,14 @@ void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud
   // Prepare the modifier 
   sensor_msgs::PointCloud2Modifier modifier(*ros_pc);
   
-  // Define ONLY x, y, z fields
-  modifier.setPointCloud2FieldsByString(1, "xyz");
+  bool has_colors = o3d_pc->HasColors();
+
+  // Define fields
+  if (has_colors) {
+    modifier.setPointCloud2FieldsByString(2, "xyz", "rgb");
+  } else {
+    modifier.setPointCloud2FieldsByString(1, "xyz");
+  }
 
   modifier.resize(o3d_pc->points_.size());
 
@@ -139,14 +166,32 @@ void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud
   sensor_msgs::PointCloud2Iterator<float> iter_y(*ros_pc, "y");
   sensor_msgs::PointCloud2Iterator<float> iter_z(*ros_pc, "z");
 
-  for (const auto& point : o3d_pc->points_) {
-    *iter_x = point(0); // x
-    *iter_y = point(1); // y
-    *iter_z = point(2); // z
+  if (has_colors) {
+    sensor_msgs::PointCloud2Iterator<float> iter_rgb(*ros_pc, "rgb");
+    for (size_t i = 0; i < o3d_pc->points_.size(); ++i) {
+      const auto& point = o3d_pc->points_[i];
+      const auto& color = o3d_pc->colors_[i];
 
-    ++iter_x;
-    ++iter_y;
-    ++iter_z;
+      *iter_x = point(0);
+      *iter_y = point(1);
+      *iter_z = point(2);
+
+      uint8_t r = static_cast<uint8_t>(color(0) * 255.0);
+      uint8_t g = static_cast<uint8_t>(color(1) * 255.0);
+      uint8_t b = static_cast<uint8_t>(color(2) * 255.0);
+      uint32_t rgb = ((uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b);
+      std::memcpy(&(*iter_rgb), &rgb, sizeof(uint32_t));
+
+      ++iter_x; ++iter_y; ++iter_z; ++iter_rgb;
+    }
+  } else {
+    for (const auto& point : o3d_pc->points_) {
+      *iter_x = point(0); // x
+      *iter_y = point(1); // y
+      *iter_z = point(2); // z
+
+      ++iter_x; ++iter_y; ++iter_z;
+    }
   }
 }
 
@@ -216,6 +261,77 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   context.cloud = o3d_pc;
   for (const auto & partitioner : partitioners_) {
     partitioner->process(context);
+  }
+
+  // display partitioned point cloud if parameter is set
+  
+  if (this->get_parameter("partitioned_pointcloud_visualization.publish").as_bool()) {
+    auto display_inliers = this->get_parameter("partitioned_pointcloud_visualization.display_inliers").as_bool();
+    auto display_outliers = this->get_parameter("partitioned_pointcloud_visualization.display_outliers").as_bool();
+    
+    auto inliers_considered = this->get_parameter("partitioned_pointcloud_visualization.inliers_considered").as_string_array();
+    
+    std::vector<size_t> inliers_considered_indexes;
+
+    for (const auto & tag : inliers_considered) {
+      if (context.clusters_registry.count(tag)) {
+        for (const auto & cluster : context.clusters_registry.at(tag)) {
+          inliers_considered_indexes.insert(inliers_considered_indexes.end(), cluster.indices.begin(), cluster.indices.end());
+        }
+      }
+    }
+    
+    // Color the ORIGINAL pointcloud first, as indices are relative to it.
+
+    auto partitioned_pc_o3d = o3d_pc;
+
+    // Paint outliers (background) if needed
+    if(display_outliers){
+      auto outlier_color_vec = this->get_parameter("partitioned_pointcloud_visualization.colors.outliers.min").as_integer_array();
+      Eigen::Vector3d outlier_color(outlier_color_vec[0], outlier_color_vec[1], outlier_color_vec[2]);
+      outlier_color /= 255.0;
+      // Paint the whole cloud with outlier color first
+      partitioned_pc_o3d->PaintUniformColor(outlier_color);
+    }
+
+    // Paint inliers (clusters) on top
+    if(display_inliers){
+      for (const auto & tag : inliers_considered) {
+        if (context.clusters_registry.count(tag)) {
+          auto clusters_from_tag = context.clusters_registry.at(tag);
+          auto min_color_p = this->get_parameter("partitioned_pointcloud_visualization.colors." + tag + ".min").as_integer_array();
+          
+          auto min_color_v = Eigen::Vector3d(min_color_p[0], min_color_p[1], min_color_p[2]);
+          min_color_v /= 255.0;
+
+          for (const auto & cluster : clusters_from_tag) {
+            // Paint the specific points in the original cloud
+            // Note: We iterate indices manually to avoid creating temporary point clouds
+            for (size_t idx : cluster.indices) {
+               if (idx < partitioned_pc_o3d->points_.size()) {
+                   // Ensure we have colors allocated (PaintUniformColor above does this, but if display_outliers is false we might need to init)
+                   if (!partitioned_pc_o3d->HasColors()) {
+                       partitioned_pc_o3d->colors_.resize(partitioned_pc_o3d->points_.size(), Eigen::Vector3d(0,0,0));
+                   }
+                   partitioned_pc_o3d->colors_[idx] = min_color_v;
+               }
+            }
+          }
+        }
+      }
+    }
+    
+    if(display_inliers && !display_outliers){
+      partitioned_pc_o3d = partitioned_pc_o3d->SelectByIndex(inliers_considered_indexes);
+    }
+    else if(display_outliers && !display_inliers){
+      partitioned_pc_o3d = partitioned_pc_o3d->SelectByIndex(inliers_considered_indexes, true);
+    }
+    
+    auto partitioned_pc_ros2 = std::make_shared<sensor_msgs::msg::PointCloud2>();
+    Open3dToRos(partitioned_pc_o3d, partitioned_pc_ros2, this->get_parameter("gridmap_frame_id").as_string());
+    this->partitioned_pointcloud_publisher_->publish(*partitioned_pc_ros2);
+
   }
 
   o3d_pc = o3d_pc->SelectByIndex(context.clusters_registry["ground"][0].indices, true);

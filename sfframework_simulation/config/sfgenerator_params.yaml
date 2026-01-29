@@ -13,3 +13,13 @@
       partitioner_plugins: ['ransac']
       ransac:
         plugin: 'sfframework/RansacSegmentation'
+
+      partitioned_pointcloud_visualization:
+        display_outliers: true
+        display_inliers: true
+        inliers_considered: ["ground"]
+        colors:
+          outliers:
+            min: [255, 255, 255]
+          ground:
+            min: [57, 196, 94]

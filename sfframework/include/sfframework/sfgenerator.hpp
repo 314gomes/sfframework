@@ -22,6 +22,7 @@ class SFGenerator : public rclcpp::Node{
 		rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud2_subscription_;
 		rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr grid_map_publisher_;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr filtered_pointcloud_publisher_;
+		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr partitioned_pointcloud_publisher_;
 		void pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
 
 

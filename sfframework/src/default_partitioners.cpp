@@ -17,7 +17,7 @@ namespace sfframework
 			node_->declare_parameter(name_ + ".probability", 0.99999999);
 
 			node_->declare_parameter(name_ + ".plane_name", "ground");
-			node_->declare_parameter(name_ + ".non_plane_name", "obstacles");
+			node_->declare_parameter(name_ + ".non_plane_name", "non-" + node_->get_parameter(name_ + ".plane_name").as_string());
 
 		}
 		void process(PartitioningContext &context){
@@ -58,6 +58,69 @@ namespace sfframework
 			context.clusters_registry[non_plane_tag].push_back(non_plane_cluster);
 		}
 	};
+	class DBSCAN : public PartitioningStrategy
+	{
+
+	public:
+		void onInitialize() override
+		{
+			// declare parameters used
+			node_->declare_parameter(name_ + ".eps", 0.5);
+			node_->declare_parameter(name_ + ".min_points", 10);
+
+			node_->declare_parameter(name_ + ".noise_tag", "noise");
+			node_->declare_parameter(name_ + ".clusters_tag", "clusters");
+		}
+		void process(PartitioningContext &context){
+			if (context.clusters_registry.find("non-ground") == context.clusters_registry.end() || context.clusters_registry.at("non-ground").empty())
+			{
+				RCLCPP_WARN(node_->get_logger(), "DBSCAN: 'non-ground' cluster not found or empty, skipping partitioner.");
+				return;
+			}
+
+			const auto& non_ground_indices = context.clusters_registry.at("non-ground")[0].indices;
+			auto non_ground_cloud = context.cloud->SelectByIndex(non_ground_indices);
+
+			auto noise_tag = node_->get_parameter(name_ + ".noise_tag").as_string();
+			auto clusters_tag = node_->get_parameter(name_ + ".clusters_tag").as_string();
+
+			auto point_labels = non_ground_cloud->ClusterDBSCAN(
+				node_->get_parameter(name_ + ".eps").as_double(),
+				node_->get_parameter(name_ + ".min_points").as_int()
+			);
+			
+			// Group original indices by cluster label
+			std::map<int, std::vector<size_t>> clusters;
+			for (size_t i = 0; i < point_labels.size(); ++i) {
+				// Map back to original index
+				clusters[point_labels[i]].push_back(non_ground_indices[i]);
+			}
+
+			// Clear previous results from this partitioner
+			context.clusters_registry[clusters_tag].clear();
+			context.clusters_registry[noise_tag].clear();
+
+			// Add new clusters to registry
+			for(auto const& [label, indices] : clusters)
+			{
+				if (label == -1) { // Noise points
+					if (!indices.empty()) {
+						PartitioningCluster noise_cluster;
+						noise_cluster.indices = indices;
+						context.clusters_registry[noise_tag].push_back(noise_cluster);
+					}
+				} else { // Regular clusters
+					if (!indices.empty()) {
+						PartitioningCluster cluster;
+						cluster.indices = indices;
+						context.clusters_registry[clusters_tag].push_back(cluster);
+					}
+				}
+			}
+		}
+	};
+
 } // namespace sfframework
 
 PLUGINLIB_EXPORT_CLASS(sfframework::RansacSegmentation, sfframework::PartitioningStrategy)
+PLUGINLIB_EXPORT_CLASS(sfframework::DBSCAN, sfframework::PartitioningStrategy)

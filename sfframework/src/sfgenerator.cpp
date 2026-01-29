@@ -298,23 +298,37 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     if(display_inliers){
       for (const auto & tag : inliers_considered) {
         if (context.clusters_registry.count(tag)) {
+          // RCLCPP_INFO(this->get_logger(), "Tag: %s", tag.c_str());
           auto clusters_from_tag = context.clusters_registry.at(tag);
+
           auto min_color_p = this->get_parameter("partitioned_pointcloud_visualization.colors." + tag + ".min").as_integer_array();
-          
           auto min_color_v = Eigen::Vector3d(min_color_p[0], min_color_p[1], min_color_p[2]);
           min_color_v /= 255.0;
 
-          for (const auto & cluster : clusters_from_tag) {
+          auto max_color_p = this->get_parameter("partitioned_pointcloud_visualization.colors." + tag + ".max").as_integer_array();
+          auto max_color_v = Eigen::Vector3d(max_color_p[0], max_color_p[1], max_color_p[2]);
+          max_color_v /= 255.0;
+
+          auto current_color_v = min_color_v;
+
+          for (size_t i = 0; i < clusters_from_tag.size(); ++i) {
+            const auto & cluster = clusters_from_tag[i];
+            // Interpolate color. Might look bad because linear RGB is not being used.
+            double ratio = (clusters_from_tag.size() > 1) ? static_cast<double>(i) / (clusters_from_tag.size() - 1) : 0.0;
+            current_color_v = min_color_v + (max_color_v - min_color_v) * ratio;
+            // print tag and color for debugging
+            // RCLCPP_INFO(this->get_logger(), "Tag: %s, Color: %f %f %f, n Colored Points: %d", tag.c_str(), current_color_v(0), current_color_v(1), current_color_v(2), cluster.indices.size());
+
             // Paint the specific points in the original cloud
             // Note: We iterate indices manually to avoid creating temporary point clouds
             for (size_t idx : cluster.indices) {
-               if (idx < partitioned_pc_o3d->points_.size()) {
-                   // Ensure we have colors allocated (PaintUniformColor above does this, but if display_outliers is false we might need to init)
-                   if (!partitioned_pc_o3d->HasColors()) {
-                       partitioned_pc_o3d->colors_.resize(partitioned_pc_o3d->points_.size(), Eigen::Vector3d(0,0,0));
-                   }
-                   partitioned_pc_o3d->colors_[idx] = min_color_v;
-               }
+              if (idx < partitioned_pc_o3d->points_.size()) {
+                // Ensure we have colors allocated (PaintUniformColor above does this, but if display_outliers is false we might need to init)
+                if (!partitioned_pc_o3d->HasColors()) {
+                    partitioned_pc_o3d->colors_.resize(partitioned_pc_o3d->points_.size(), Eigen::Vector3d(0,0,0));
+                }
+                partitioned_pc_o3d->colors_[idx] = current_color_v;
+              }
             }
           }
         }

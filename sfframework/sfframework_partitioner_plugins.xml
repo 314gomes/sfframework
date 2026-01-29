@@ -1,7 +1,12 @@
 <library path="sfframework_default_partitioners">
   <class name="sfframework/RansacSegmentation" type="sfframework::RansacSegmentation" base_class_type="sfframework::PartitioningStrategy">
     <description>
-      A filter that removes statistical outliers from a point cloud.
+      Ransac segmentation using Open3d's implementation.
+    </description>
+  </class>
+  <class name="sfframework/DBSCAN" type="sfframework::DBSCAN" base_class_type="sfframework::PartitioningStrategy">
+    <description>
+      DBSCAN clustering using Open3d's implementation.
     </description>
   </class>
 </library>

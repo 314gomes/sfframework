@@ -10,16 +10,22 @@
       voxel_downsample:
         plugin: 'sfframework/VoxelDownSampleFilter'
         voxel_size: 0.2
-      partitioner_plugins: ['ransac']
+      partitioner_plugins: ['ransac', 'dbscan']
       ransac:
         plugin: 'sfframework/RansacSegmentation'
+        distance_threshold: 0.1
+      dbscan:
+        plugin: 'sfframework/DBSCAN'
 
       partitioned_pointcloud_visualization:
         display_outliers: true
         display_inliers: true
-        inliers_considered: ["ground"]
+        inliers_considered: ['ground', 'clusters']
         colors:
           outliers:
             min: [255, 255, 255]
           ground:
             min: [57, 196, 94]
+          clusters:
+            min: [127, 0, 0]
+            max: [255, 255, 0]

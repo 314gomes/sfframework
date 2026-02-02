@@ -2,7 +2,7 @@
   sfgenerator:
     ros__parameters:
       use_sim_time: true
-      filter_plugins: ['stat_outlier_removal', 'voxel_downsample']
+      filter_plugins: ['voxel_downsample', stat_outlier_removal]
       stat_outlier_removal:
         plugin: 'sfframework/StatisticalOutlierRemovalFilter'
         nb_neighbors: 30

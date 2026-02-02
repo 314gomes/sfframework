@@ -10,6 +10,7 @@
 #include <cmath>
 #include <open3d/Open3D.h>
 #include <Eigen/Dense>
+#include <omp.h>
 
 
 SFGenerator::SFGenerator()
@@ -224,7 +225,7 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   }
   grid_map_.setPosition(grid_map::Position(tf_grid_frame_to_grid_target.transform.translation.x, tf_grid_frame_to_grid_target.transform.translation.y));
 
-  // Transform point cloud to girdmap frame
+  // Transform point cloud to gridmap frame
   geometry_msgs::msg::TransformStamped tf_cloud_to_grid_frame;
   try{
     tf_cloud_to_grid_frame = tf_buffer_.get()->lookupTransform(
@@ -236,6 +237,7 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     RCLCPP_WARN(this->get_logger(), "%s", ex.what());
     return;
   }
+  // TODO: consider changing logic to downsample first and then apply transform using o3d_pc->Transform()
   tf2::doTransform(cloud, cloud, tf_cloud_to_grid_frame);
   // float max_range = 2 * distance_threshold; // meters
   float max_range = 10.0; 
@@ -354,8 +356,10 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   grid_map_.get("potential").setZero();
   
   // Calculate potential field from o3d point cloud
-  for (const auto& point : o3d_pc->points_)
+  #pragma omp parallel for
+  for (size_t i = 0; i < o3d_pc->points_.size(); ++i)
   {
+    auto point = o3d_pc->points_[i];
     auto point_position_on_grid = grid_map::Position(point(0), point(1));
     
     // iterate over every every gridmap cell

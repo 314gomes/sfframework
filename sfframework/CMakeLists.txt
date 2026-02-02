@@ -23,12 +23,14 @@ find_package(grid_map_ros REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Open3D REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(OpenMP REQUIRED)
 
 add_executable(sfgenerator src/sfgenerator.cpp)
 
 target_link_libraries(sfgenerator
 Open3D::Open3D
 Eigen3::Eigen
+OpenMP::OpenMP_CXX
 )
 
 ament_target_dependencies(sfgenerator

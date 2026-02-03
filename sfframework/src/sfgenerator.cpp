@@ -58,6 +58,10 @@ SFGenerator::SFGenerator()
     RCLCPP_INFO(this->get_logger(), "  %s", cls.c_str());
   }
 
+  this->declare_parameter("default_filters.max_distance", 10.0);
+  this->declare_parameter("default_filters.min_height", 0.1);
+  this->declare_parameter("default_filters.max_height", 1.0);
+
   this->declare_parameter("filter_plugins", std::vector<std::string>());
   auto filter_names = this->get_parameter("filter_plugins").as_string_array();
 
@@ -118,7 +122,7 @@ SFGenerator::SFGenerator()
     "Node [%s] started.", this->get_name());
 }
 
-void SFGenerator::rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, float dist_limit){
+void SFGenerator::rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, float dist_limit, float max_height, float min_height){
     // Safety checks
     if (ros_pc->height == 0 || ros_pc->width == 0) {
         return;
@@ -137,9 +141,20 @@ void SFGenerator::rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ro
     float dist_limit_sqrd = dist_limit * dist_limit;
     for (size_t i = 0; i < num_points; ++i, ++iter_x, ++iter_y, ++iter_z) {
         // filter out invalid points
-        if (Eigen::Vector2d(*iter_x, *iter_y).squaredNorm() <= dist_limit_sqrd && std::isfinite(*iter_x) && std::isfinite(*iter_y) && std::isfinite(*iter_z)) {
-            o3d_pc->points_.emplace_back(*iter_x, *iter_y, *iter_z);
+        if (!std::isfinite(*iter_x) || !std::isfinite(*iter_y) || !std::isfinite(*iter_z)) {
+            continue;
         }
+        // filter out points beyond distance limit
+        if (Eigen::Vector2d(*iter_x, *iter_y).squaredNorm() > dist_limit_sqrd) {
+            continue;
+        }
+        // filter points by height
+        if (*iter_z > max_height || *iter_z < min_height) {
+            continue;
+        }
+
+        // Add point to Open3D point cloud
+        o3d_pc->points_.emplace_back(*iter_x, *iter_y, *iter_z);
     }
 }
 
@@ -239,11 +254,14 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   }
   // TODO: consider changing logic to downsample first and then apply transform using o3d_pc->Transform()
   tf2::doTransform(cloud, cloud, tf_cloud_to_grid_frame);
-  // float max_range = 2 * distance_threshold; // meters
-  float max_range = 10.0; 
   
   auto o3d_pc = std::make_shared<open3d::geometry::PointCloud>();
-  rosToOpen3d(std::make_shared<sensor_msgs::msg::PointCloud2>(cloud), o3d_pc, max_range);
+  rosToOpen3d(std::make_shared<sensor_msgs::msg::PointCloud2>(cloud),
+   o3d_pc,
+   this->get_parameter("default_filters.max_distance").as_double(),
+   this->get_parameter("default_filters.max_height").as_double(),
+   this->get_parameter("default_filters.min_height").as_double()
+  );
 
   // run every filter from list of plugins in order
   for (const auto & filter : filters_) {

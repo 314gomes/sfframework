@@ -33,7 +33,7 @@ class SFGenerator : public rclcpp::Node{
 		std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
 		std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-		void rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, float dist_limit);
+		void rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, float dist_limit, float max_height, float min_height);
 		void Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, std::string frame_id);
 
 		pluginlib::ClassLoader<sfframework::FilterBase> filter_loader_;

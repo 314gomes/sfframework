@@ -21,9 +21,16 @@ namespace sfframework
 
 		}
 		void onProcess(PartitioningContext &context){
+			int ransac_n = node_->get_parameter(name_ + ".ransac_n").as_int();
+			if (input_cloud_->points_.size() < static_cast<size_t>(ransac_n)) {
+				// warn and skip
+				RCLCPP_WARN(node_->get_logger(), "Partitioning plugin [%s] found input cloud size (%zu) smaller than ransac_n (%d). Skipping plane segmentation.", name_.c_str(), input_cloud_->points_.size(), ransac_n);
+				return;
+			}
+
 			auto [coefficients, inliers] = input_cloud_->SegmentPlane(
 				node_->get_parameter(name_ + ".distance_threshold").as_double(),
-				node_->get_parameter(name_ + ".ransac_n").as_int(),
+				ransac_n,
 				node_->get_parameter(name_ + ".num_iterations").as_int(),
 				node_->get_parameter(name_ + ".probability").as_double()
 			);

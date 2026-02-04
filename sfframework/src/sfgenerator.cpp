@@ -368,7 +368,20 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
 
   }
 
-  o3d_pc = o3d_pc->SelectByIndex(context.clusters_registry["ground"][0].indices, true);
+  try
+  {
+    o3d_pc = o3d_pc->SelectByIndex(context.clusters_registry.at("ground").at(0).indices, true);
+  }
+  catch(const std::out_of_range& e)
+  {
+    RCLCPP_WARN(this->get_logger(), "No ground cluster found, skipping potential field generation.");
+    return;
+  }
+
+  if(o3d_pc->points_.size() == 0){
+    RCLCPP_WARN(this->get_logger(), "non-ground cluster is empty, skipping potential field generation.");
+    return;
+  }
 
   // Reset potential field
   grid_map_.get("potential").setZero();

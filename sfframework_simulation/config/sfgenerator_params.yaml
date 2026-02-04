@@ -10,6 +10,10 @@
       voxel_downsample:
         plugin: 'sfframework/VoxelDownSampleFilter'
         voxel_size: 0.2
+      default_filters:
+        max_distance: 10.0
+        max_height: 1.5
+        min_height: -2.0
       partitioner_plugins: ['ransac', 'dbscan']
       ransac:
         plugin: 'sfframework/RansacSegmentation'

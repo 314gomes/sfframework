@@ -1,3 +1,6 @@
+#ifndef SFFRAMEWORK_PARTITIONING_CLUSTER_HPP_
+#define SFFRAMEWORK_PARTITIONING_CLUSTER_HPP_
+
 #include <any>
 #include <map>
 #include <vector>
@@ -10,3 +13,5 @@ struct PartitioningCluster {
     // Metadata: Flexible storage 
     std::map<std::string, std::any> attributes;
 };
+
+#endif  // SFFRAMEWORK_PARTITIONING_CLUSTER_HPP_

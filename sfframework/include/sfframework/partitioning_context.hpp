@@ -1,3 +1,6 @@
+#ifndef SFFRAMEWORK_PARTITIONING_CONTEXT_HPP_
+#define SFFRAMEWORK_PARTITIONING_CONTEXT_HPP_
+
 #include <memory>
 #include <open3d/Open3D.h>
 #include <sfframework/partitioning_cluster.hpp>
@@ -10,3 +13,5 @@ struct PartitioningContext {
     // e.g., "ground" -> [Cluster], "obstacles" -> [Cluster, Cluster...]
     std::map<std::string, std::vector<PartitioningCluster>> clusters_registry;
 };
+
+#endif  // SFFRAMEWORK_PARTITIONING_CONTEXT_HPP_

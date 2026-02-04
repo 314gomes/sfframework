@@ -25,7 +25,7 @@ find_package(Open3D REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
 
-add_executable(sfgenerator src/sfgenerator.cpp)
+add_executable(sfgenerator src/sfgenerator.cpp src/sfgenerator_utils.cpp)
 
 target_link_libraries(sfgenerator
 Open3D::Open3D

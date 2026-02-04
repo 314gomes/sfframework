@@ -6,6 +6,7 @@
 #include <open3d/Open3D.h>
 #include <rclcpp/rclcpp.hpp>
 #include "sfframework/partitioning_context.hpp"
+#include "sfframework/sfgenerator_utils.hpp"
 
 namespace sfframework
 {
@@ -27,62 +28,41 @@ namespace sfframework
       this->onInitialize();
     };
 
-    void process(PartitioningContext &context){
+    void process(PartitioningContext &context)
+    {
       this->indices_map_.clear();
-      if (node_->get_parameter(name_ + ".input_tags").as_string_array().empty())
-      {
-        this->input_cloud_ = context.cloud;
-      }
-      else{
-        std::vector<size_t> input_indices_;
-        auto input_tags = node_->get_parameter(name_ + ".input_tags").as_string_array();
-        for (const auto &tag : input_tags){
-          std::vector<PartitioningCluster> clusters_at_tag;
-          
-          try
-          {
-            clusters_at_tag = context.clusters_registry.at(tag);
-          }
-          catch(const std::out_of_range& e)
-          {
-            RCLCPP_WARN(node_->get_logger(), "Partitioning plugin [%s] tried to find a list of clusters at tag \"%s\" but tag is missing. Skipping partitioner.", name_.c_str(), tag.c_str());
-            return;
-          }
-          
-          for (const auto &cluster : clusters_at_tag){
-            input_indices_.insert(input_indices_.end(), cluster.indices.begin(), cluster.indices.end());
-          }
-        
-        }
 
-        if (node_->get_parameter(name_ + ".invert_selection").as_bool()) {
-          size_t num_points = context.cloud->points_.size();
-          std::vector<bool> mask(num_points, true);
-          for (size_t idx : input_indices_) {
-            if (idx < num_points) mask[idx] = false;
-          }
-          for (size_t i = 0; i < num_points; ++i) {
-            if (mask[i]) this->indices_map_.push_back(i);
-          }
-        } else {
-          this->indices_map_ = input_indices_;
-        }
-        this->input_cloud_ = context.cloud->SelectByIndex(this->indices_map_, false);
+      try
+      {
+        this->input_cloud_ = sfframework::SFGeneratorUtils::cloud_from_tags(
+            context,
+            node_->get_parameter(name_ + ".input_tags").as_string_array(),
+            node_->get_parameter(name_ + ".invert_selection").as_bool(),
+            this->indices_map_);
       }
+      catch (const std::out_of_range &e)
+      {
+        RCLCPP_WARN(node_->get_logger(), "Partitioning plugin [%s] tried to find a list of clusters at a tag but it is missing. Skipping partitioner.", name_.c_str());
+        return;
+      }
+
       this->onProcess(context);
     }
-    
-    protected:
+
+  protected:
     // The logic step: Read input_cloud_ -> Process -> Write to Context
     virtual void onProcess(PartitioningContext &context) = 0;
     virtual void onInitialize() = 0;
 
-    bool needsMapping() const {
+    bool needsMapping() const
+    {
       return !indices_map_.empty();
     }
 
-    size_t mapToOriginalIndex(size_t index) const {
-      if (indices_map_.empty()) {
+    size_t mapToOriginalIndex(size_t index) const
+    {
+      if (indices_map_.empty())
+      {
         return index;
       }
       return indices_map_[index];

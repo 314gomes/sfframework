@@ -109,7 +109,7 @@ SFGenerator::SFGenerator()
     std::string type = this->get_parameter(name + ".plugin").as_string();
     try {
       auto sf_strategy = sf_strategy_loader_.createSharedInstance(type);
-      sf_strategy->initialize(this, name);
+      sf_strategy->initialize(this, name, grid_map_);
       sf_strategies_.push_back(sf_strategy);
       RCLCPP_INFO(this->get_logger(), "Successfully loaded Scalar Field strategy plugin '%s' of type '%s'", name.c_str(), type.c_str());
     } catch (pluginlib::PluginlibException & ex) {
@@ -130,7 +130,6 @@ SFGenerator::SFGenerator()
   this->partitioned_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("partitioned_pointcloud", 10);
 
   grid_map_.setGeometry(grid_map::Length(5.0, 5.0), 0.10);
-  grid_map_.add("potential", 0);
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -392,9 +391,6 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     return;
   }
 
-  // Reset potential field
-  grid_map_.get("potential").setZero();
-  
   // Calculate potential field from o3d point cloud
   for (const auto & sf_strategy : sf_strategies_) {
     sf_strategy->process(context, grid_map_);

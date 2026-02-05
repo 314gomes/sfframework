@@ -17,12 +17,12 @@ namespace sfframework
 
     virtual ~SFStrategy() = default;
 
-    void initialize(rclcpp::Node *node, const std::string &name)
+    void initialize(rclcpp::Node *node, const std::string &name, grid_map::GridMap &grid_map)
     {
       node_ = node;
       name_ = name;
 
-      this->onInitialize();
+      this->onInitialize(grid_map);
     };
 
     void process(PartitioningContext &context, grid_map::GridMap &grid_map)
@@ -33,7 +33,7 @@ namespace sfframework
   protected:
     // The logic step: Read input_cloud_ -> Process -> Write to Context
     virtual void onProcess(PartitioningContext &context, grid_map::GridMap &grid_map) = 0;
-    virtual void onInitialize() = 0;
+    virtual void onInitialize(grid_map::GridMap &grid_map) = 0;
 
     std::string name_;
     rclcpp::Node *node_;

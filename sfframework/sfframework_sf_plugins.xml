@@ -16,4 +16,12 @@
       Strategy to compute a weighted summation of multiple input layers.
     </description>
   </class>
+
+  <!-- PlaneInclination -->
+  <class name="sfframework/PlaneInclination" type="sfframework::PlaneInclination" base_class_type="sfframework::SFStrategy">
+    <description>
+      Strategy to compute the inclination of a plane fitted to the input point cloud.
+    </description>
+  </class>
+
 </library>

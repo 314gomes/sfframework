@@ -142,15 +142,10 @@ namespace sfframework
       }
       
       // Compute weighted summation
-      // #pragma omp parallel for
-      for (grid_map::GridMapIterator iterator(grid_map); !iterator.isPastEnd(); ++iterator)
+      grid_map[output_layer].setConstant(0.0);
+      for (size_t i = 0; i < input_layers.size(); ++i)
       {
-        double potential = 0.0;
-        for (size_t i = 0; i < input_layers.size(); ++i)
-        {
-          potential += weights[i] * grid_map.at(input_layers[i], *iterator);
-        }
-        grid_map.at(output_layer, *iterator) = potential;
+        grid_map[output_layer] += weights[i] * grid_map[input_layers[i]];
       }
 
     }

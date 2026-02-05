@@ -86,6 +86,28 @@ target_include_directories(sfframework_default_partitioners PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+
+# Build the scalar field plugin library
+add_library(sfframework_default_sf_strategies SHARED src/default_sf_strategies.cpp)
+
+target_link_libraries(sfframework_default_sf_strategies
+  Open3D::Open3D
+  Eigen3::Eigen
+  OpenMP::OpenMP_CXX
+)
+
+ament_target_dependencies(sfframework_default_sf_strategies
+  rclcpp
+  pluginlib
+  grid_map_core
+  grid_map_ros
+)
+
+target_include_directories(sfframework_default_sf_strategies PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
 install(TARGETS
   sfgenerator
   DESTINATION lib/${PROJECT_NAME})
@@ -100,12 +122,18 @@ install(TARGETS sfframework_default_partitioners
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
+install(TARGETS sfframework_default_sf_strategies
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
 
-install(FILES sfframework_filter_plugins.xml sfframework_partitioner_plugins.xml
+install(FILES sfframework_filter_plugins.xml sfframework_partitioner_plugins.xml sfframework_sf_plugins.xml
   DESTINATION share/${PROJECT_NAME}
 )
 pluginlib_export_plugin_description_file(sfframework sfframework_filter_plugins.xml)
 pluginlib_export_plugin_description_file(sfframework sfframework_partitioner_plugins.xml)
+pluginlib_export_plugin_description_file(sfframework sfframework_sf_plugins.xml)
 
 
 target_include_directories(sfgenerator PUBLIC

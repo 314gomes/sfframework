@@ -22,6 +22,10 @@
         input_tags: ['ground']
         invert_selection: true
         plugin: 'sfframework/DBSCAN'
+      sf_strategy_plugins: ['gaussian_repulsion']
+      gaussian_repulsion:
+        plugin: 'sfframework/GaussianRepulsion'
+        input_tags: ['clusters']
 
       partitioned_pointcloud_visualization:
         display_outliers: true

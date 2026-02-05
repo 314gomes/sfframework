@@ -1,0 +1,7 @@
+<library path="sfframework_default_sf_strategies">
+  <class name="sfframework/GaussianRepulsion" type="sfframework::GaussianRepulsion" base_class_type="sfframework::SFStrategy">
+    <description>
+      A simple SF strategy that applies a Gaussian repulsion field to the points in the point cloud.
+    </description>
+  </class>
+</library>

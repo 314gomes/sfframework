@@ -21,5 +21,6 @@
     <build_type>ament_cmake</build_type>
     <sfframework plugin="${prefix}/sfframework_filter_plugins.xml"/>
     <sfframework plugin="${prefix}/sfframework_partitioner_plugins.xml"/>
+    <sfframework plugin="${prefix}/sfframework_sf_plugins.xml"/>
   </export>
 </package>

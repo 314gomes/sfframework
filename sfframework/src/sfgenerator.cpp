@@ -16,7 +16,8 @@
 SFGenerator::SFGenerator()
   : Node("sfgenerator"),
     filter_loader_("sfframework", "sfframework::FilterBase"),
-    partitioner_loader_("sfframework", "sfframework::PartitioningStrategy")
+    partitioner_loader_("sfframework", "sfframework::PartitioningStrategy"),
+    sf_strategy_loader_("sfframework", "sfframework::SFStrategy")
 {
   this->lidar_callback_group_ = this->create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -97,6 +98,22 @@ SFGenerator::SFGenerator()
       RCLCPP_INFO(this->get_logger(), "Successfully loaded partitioner plugin '%s' of type '%s'", name.c_str(), type.c_str());
     } catch (pluginlib::PluginlibException & ex) {
       RCLCPP_ERROR(this->get_logger(), "The plugin failed to load for partitioner '%s'. Error: %s", name.c_str(), ex.what());
+    }
+  }
+
+  this->declare_parameter("sf_strategy_plugins", std::vector<std::string>());
+  auto sf_strategy_names = this->get_parameter("sf_strategy_plugins").as_string_array();
+
+  for (const auto & name : sf_strategy_names) {
+    this->declare_parameter(name + ".plugin", "");
+    std::string type = this->get_parameter(name + ".plugin").as_string();
+    try {
+      auto sf_strategy = sf_strategy_loader_.createSharedInstance(type);
+      sf_strategy->initialize(this, name);
+      sf_strategies_.push_back(sf_strategy);
+      RCLCPP_INFO(this->get_logger(), "Successfully loaded Scalar Field strategy plugin '%s' of type '%s'", name.c_str(), type.c_str());
+    } catch (pluginlib::PluginlibException & ex) {
+      RCLCPP_ERROR(this->get_logger(), "The plugin failed to load for Scalar Field strategy '%s'. Error: %s", name.c_str(), ex.what());
     }
   }
 
@@ -212,14 +229,6 @@ void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud
 }
 
 void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg){
-  auto A = this->get_parameter("A").as_double();
-  auto two_sigma_sqrd = this->get_parameter("sigma").as_double();
-  two_sigma_sqrd = two_sigma_sqrd * two_sigma_sqrd;
-  two_sigma_sqrd = two_sigma_sqrd * 2.0;
-  
-  auto distance_threshold = this->get_parameter("sigma").as_double() * 3.0;
-  
-  
   auto tstart = this->get_clock()->now();
   
   this->cloud = *msg;
@@ -387,34 +396,12 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   grid_map_.get("potential").setZero();
   
   // Calculate potential field from o3d point cloud
-  #pragma omp parallel for
-  for (size_t i = 0; i < o3d_pc->points_.size(); ++i)
-  {
-    auto point = o3d_pc->points_[i];
-    auto point_position_on_grid = grid_map::Position(point(0), point(1));
-    
-    // iterate over every every gridmap cell
-    for(grid_map::GridMapIterator iterator(grid_map_); !iterator.isPastEnd(); ++iterator) {
-      grid_map::Position cell_position(0, 0);
-      grid_map_.getPosition(*iterator, cell_position);
-      double distance_sqrd = (point_position_on_grid - cell_position).squaredNorm();
-      
-      if (distance_sqrd < distance_threshold ){
-        // Potential field decreases with distance_sqrd (e.g., Gaussian)
-        double potential = A * std::exp(-distance_sqrd /  two_sigma_sqrd);
-        if(grid_map_.at("potential", *iterator) < potential){
-          grid_map_.at("potential", *iterator) = potential;
-        }
-      }
-    }
+  for (const auto & sf_strategy : sf_strategies_) {
+    sf_strategy->process(context, grid_map_);
   }
-  
-  //sleep for 3 seconds for debugging high latency
-  // std::this_thread::sleep_for(std::chrono::seconds(3));
-  
 
   // Set the timestamp and publish the grid map
-  grid_map::Time timestamp(this->get_clock()->now().nanoseconds());
+  grid_map::Time timestamp(rclcpp::Time(cloud.header.stamp).nanoseconds());
   grid_map_.setTimestamp(timestamp);
   auto message = grid_map::GridMapRosConverter::toMessage(grid_map_);
   // print gridmap position for debugging

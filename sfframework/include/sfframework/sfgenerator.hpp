@@ -10,6 +10,7 @@
 #include <pluginlib/class_loader.hpp>
 #include "sfframework/filter_base.hpp"
 #include "sfframework/partitioning_strategy.hpp"
+#include "sfframework/sf_strategy.hpp"
 
 
 class SFGenerator : public rclcpp::Node{
@@ -38,6 +39,9 @@ class SFGenerator : public rclcpp::Node{
 
 		pluginlib::ClassLoader<sfframework::FilterBase> filter_loader_;
 		pluginlib::ClassLoader<sfframework::PartitioningStrategy> partitioner_loader_;
+		pluginlib::ClassLoader<sfframework::SFStrategy> sf_strategy_loader_;
+
 		std::vector<std::shared_ptr<sfframework::FilterBase>> filters_;
 		std::vector<std::shared_ptr<sfframework::PartitioningStrategy>> partitioners_;
+		std::vector<std::shared_ptr<sfframework::SFStrategy>> sf_strategies_;
 	};

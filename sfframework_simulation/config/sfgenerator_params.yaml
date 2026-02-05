@@ -22,12 +22,16 @@
         input_tags: ['ground']
         invert_selection: true
         plugin: 'sfframework/DBSCAN'
-      sf_strategy_plugins: ['gaussian_repulsion', parabolic_rest]
+      sf_strategy_plugins: ['gaussian_repulsion', 'parabolic_rest', 'weighted_summation']
       gaussian_repulsion:
         plugin: 'sfframework/GaussianRepulsion'
         input_tags: ['clusters']
       parabolic_rest:
         plugin: 'sfframework/ParabolicRest'
+      weighted_summation:
+        plugin: 'sfframework/WeightedSummation'
+        input_layers: ['gaussian_repulsion', 'parabolic_rest']
+        weights: [0.5, 0.5]
 
       partitioned_pointcloud_visualization:
         display_outliers: true

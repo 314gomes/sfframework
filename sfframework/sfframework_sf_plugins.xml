@@ -10,4 +10,10 @@
       A simple SF strategy that applies a parabolic attractive field to a user-defined center point.
     </description>
   </class>
+
+  <class name="sfframework/WeightedSummation" type="sfframework::WeightedSummation" base_class_type="sfframework::SFStrategy">
+    <description>
+      Strategy to compute a weighted summation of multiple input layers.
+    </description>
+  </class>
 </library>

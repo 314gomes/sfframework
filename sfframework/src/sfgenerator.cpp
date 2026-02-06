@@ -27,9 +27,6 @@ SFGenerator::SFGenerator()
   sub_opt.callback_group = lidar_callback_group_;
 
   // Add parameters a and b with type float and default values
-  this->declare_parameter("A", 0.001);
-  this->declare_parameter("sigma", 0.5);
-
   this->declare_parameter("publish_filtered_pointcloud", true);
   this->declare_parameter("partitioned_pointcloud_visualization.publish", true);
   
@@ -37,7 +34,11 @@ SFGenerator::SFGenerator()
   this->declare_parameter("partitioned_pointcloud_visualization.display_outliers", true);
 
   this->declare_parameter("partitioned_pointcloud_visualization.inliers_considered", std::vector<std::string>());
-  
+
+  this->declare_parameter("grid_map_geometry.cell_size", 0.1);
+  this->declare_parameter("grid_map_geometry.size_x", 5.0);
+  this->declare_parameter("grid_map_geometry.size_y", 5.0);
+
   // define parameter for min and max color for each inlier id
   auto tags = this->get_parameter("partitioned_pointcloud_visualization.inliers_considered").as_string_array();
   // tags.push_back("outliers");
@@ -130,7 +131,13 @@ SFGenerator::SFGenerator()
   filtered_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("filtered_pointcloud", 10);
   this->partitioned_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("partitioned_pointcloud", 10);
 
-  grid_map_.setGeometry(grid_map::Length(5.0, 5.0), 0.10);
+  grid_map_.setGeometry(
+    grid_map::Length(
+      this->get_parameter("grid_map_geometry.size_x").as_double(),
+      this->get_parameter("grid_map_geometry.size_y").as_double()
+    ),
+    this->get_parameter("grid_map_geometry.cell_size").as_double()
+  );
 
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);

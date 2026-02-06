@@ -1,6 +1,8 @@
 #include "sfframework/partitioning_strategy.hpp"
 #include "sfframework/cluster_types.hpp"
+#include "sfframework/exceptions.hpp"
 #include <pluginlib/class_list_macros.hpp>
+#include <cmath>
 
 namespace sfframework
 {
@@ -19,6 +21,7 @@ namespace sfframework
 			node_->declare_parameter(name_ + ".plane_name", "ground");
 			node_->declare_parameter(name_ + ".non_plane_name", "non-" + node_->get_parameter(name_ + ".plane_name").as_string());
 
+			node_->declare_parameter(name_ + ".max_inclination_rad", 0.785398163);
 		}
 		void onProcess(PartitioningContext &context){
 			int ransac_n = node_->get_parameter(name_ + ".ransac_n").as_int();
@@ -37,6 +40,14 @@ namespace sfframework
 
 			if (inliers.empty()) {
 				return;
+			}
+
+			// Check inclination: angle between plane normal (a,b,c) and vertical (0,0,1)
+			// cos(theta) = c (assuming normalized coefficients)
+			double inclination = std::acos(std::abs(coefficients(2)));
+			double max_inclination = node_->get_parameter(name_ + ".max_inclination_rad").as_double();
+			if (inclination > max_inclination) {
+				throw SkipFrameException("Plane inclination " + std::to_string(inclination) + " exceeds limit " + std::to_string(max_inclination));
 			}
 
 			PartitioningCluster plane_cluster;

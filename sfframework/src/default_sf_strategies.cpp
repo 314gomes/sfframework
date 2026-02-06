@@ -187,7 +187,7 @@ namespace sfframework
       auto d = plane.coefficients(3);
 
       // print plane model for debugging
-      RCLCPP_INFO(node_->get_logger(), "Plane model: a=%f, b=%f, c=%f, d=%f", a, b, c, d);
+      // RCLCPP_INFO(node_->get_logger(), "Plane model: a=%f, b=%f, c=%f, d=%f", a, b, c, d);
 
       if (c <= threshold)
       {

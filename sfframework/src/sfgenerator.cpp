@@ -1,4 +1,5 @@
 #include "sfframework/sfgenerator.hpp"
+#include "sfframework/exceptions.hpp"
 #include <chrono>
 #include <memory>
 #include <string>
@@ -287,8 +288,13 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   // run every partitioner from list of plugins in order
   PartitioningContext context;
   context.cloud = o3d_pc;
-  for (const auto & partitioner : partitioners_) {
-    partitioner->process(context);
+  try {
+    for (const auto & partitioner : partitioners_) {
+      partitioner->process(context);
+    }
+  } catch (const sfframework::SkipFrameException & e) {
+    RCLCPP_WARN(this->get_logger(), "Skipping frame: %s", e.what());
+    return;
   }
 
   // display partitioned point cloud if parameter is set

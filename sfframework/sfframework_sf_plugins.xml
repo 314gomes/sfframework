@@ -24,4 +24,11 @@
     </description>
   </class>
 
+  <!-- sfframework::PlaneInclinationFromImuLinear -->
+  <class name="sfframework/PlaneInclinationFromImuLinear" type="sfframework::PlaneInclinationFromImuLinear" base_class_type="sfframework::SFStrategy">
+    <description>
+      Strategy to compute the inclination of a plane using linear acceleration data from an IMU.
+    </description>
+  </class>
+
 </library>

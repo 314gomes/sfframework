@@ -114,7 +114,7 @@ SFGenerator::SFGenerator()
     std::string type = this->get_parameter(name + ".plugin").as_string();
     try {
       auto sf_strategy = sf_strategy_loader_.createSharedInstance(type);
-      sf_strategy->initialize(this, name, grid_map_);
+      sf_strategy->initialize(this, name, grid_map_, this->tf_buffer_.get());
       sf_strategies_.push_back(sf_strategy);
       RCLCPP_INFO(this->get_logger(), "Successfully loaded Scalar Field strategy plugin '%s' of type '%s'", name.c_str(), type.c_str());
     } catch (pluginlib::PluginlibException & ex) {

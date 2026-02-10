@@ -7,6 +7,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include "sfframework/partitioning_context.hpp"
 #include "grid_map_ros/grid_map_ros.hpp"
+#include "tf2_ros/buffer.h"
 
 namespace sfframework
 {
@@ -17,10 +18,11 @@ namespace sfframework
 
     virtual ~SFStrategy() = default;
 
-    void initialize(rclcpp::Node *node, const std::string &name, grid_map::GridMap &grid_map)
+    void initialize(rclcpp::Node *node, const std::string &name, grid_map::GridMap &grid_map, tf2_ros::Buffer* tf_buffer)
     {
       node_ = node;
       name_ = name;
+      tf_buffer_ = tf_buffer;
 
       this->onInitialize(grid_map);
     };
@@ -37,6 +39,7 @@ namespace sfframework
 
     std::string name_;
     rclcpp::Node *node_;
+    tf2_ros::Buffer *tf_buffer_;
 
   };
 } // namespace sfframework

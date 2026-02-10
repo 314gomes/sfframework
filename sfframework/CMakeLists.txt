@@ -105,6 +105,7 @@ ament_target_dependencies(sfframework_default_sf_strategies
   pluginlib
   grid_map_core
   grid_map_ros
+  tf2_ros
 )
 
 target_include_directories(sfframework_default_sf_strategies PUBLIC

@@ -14,24 +14,29 @@
         max_distance: 10.0
         max_height: 1.5
         min_height: -2.0
-      partitioner_plugins: ['ransac', 'dbscan']
-      ransac:
-        plugin: 'sfframework/RansacSegmentation'
+      partitioner_plugins: ['trivial_plane', 'dbscan']
+      # sfframework/TrivialPlaneSegmentation
+      trivial_plane:
+        plugin: 'sfframework/TrivialPlaneSegmentation'
         distance_threshold: 0.1
       dbscan:
         input_tags: ['ground']
         invert_selection: true
         plugin: 'sfframework/DBSCAN'
-      sf_strategy_plugins: ['gaussian_repulsion', 'parabolic_rest', 'weighted_summation']
+      sf_strategy_plugins: ['gaussian_repulsion', 'parabolic_rest', 'plane_inclination', 'weighted_summation']
       gaussian_repulsion:
         plugin: 'sfframework/GaussianRepulsion'
         input_tags: ['clusters']
       parabolic_rest:
         plugin: 'sfframework/ParabolicRest'
+      plane_inclination:
+        input_tag: ground
+        output_layer: plane_inclination
+        plugin: sfframework/PlaneInclination
       weighted_summation:
         plugin: 'sfframework/WeightedSummation'
-        input_layers: ['gaussian_repulsion', 'parabolic_rest']
-        weights: [0.5, 0.5]
+        input_layers: ['gaussian_repulsion', 'parabolic_rest', 'plane_inclination']
+        weights: [0.5, 0.5, 0.5]
 
       partitioned_pointcloud_visualization:
         display_outliers: true

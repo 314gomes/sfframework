@@ -73,12 +73,16 @@ add_library(sfframework_default_partitioners SHARED src/default_partitioners.cpp
 target_link_libraries(sfframework_default_partitioners
   Open3D::Open3D
   Eigen3::Eigen
+  OpenMP::OpenMP_CXX
 )
 
 ament_target_dependencies(sfframework_default_partitioners
   rclcpp
   pluginlib
   grid_map_core
+  std_msgs
+  grid_map_ros
+  tf2_ros
 )
 
 target_include_directories(sfframework_default_partitioners PUBLIC

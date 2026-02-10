@@ -3,9 +3,85 @@
 #include "sfframework/exceptions.hpp"
 #include <pluginlib/class_list_macros.hpp>
 #include <cmath>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <omp.h>
 
 namespace sfframework
 {
+
+	class TrivialPlaneSegmentation : public PartitioningStrategy
+	{
+	public:
+		void onInitialize() override
+		{
+			this->node_->declare_parameter(name_ + ".plane_name", "ground");
+			rcl_interfaces::msg::ParameterDescriptor plane_link_desc;
+			plane_link_desc.description = "a link touching the plane and parallel to it, usually odom or base_footprint)";
+			this->node_->declare_parameter(name_ + ".plane_link", "robot_base_footprint", plane_link_desc);
+			this->node_->declare_parameter(name_ + ".distance_threshold", 0.1);
+		}
+		void onProcess(PartitioningContext &context) override
+		{
+			std::string plane_tag = node_->get_parameter(name_ + ".plane_name").as_string();
+			std::string plane_link = node_->get_parameter(name_ + ".plane_link").as_string();
+			double distance_threshold = node_->get_parameter(name_ + ".distance_threshold").as_double();
+			
+			// Get plane equation in relation to the cloud frame using TF
+			geometry_msgs::msg::TransformStamped transform;
+			try {
+				transform = this->tf_buffer_->lookupTransform(
+					context.header.frame_id,
+					plane_link,
+					rclcpp::Time(context.header.stamp)
+				);
+			} catch (const tf2::TransformException & ex) {
+				RCLCPP_WARN(node_->get_logger(), "TrivialPlaneSegmentation: %s", ex.what());
+				// throw skip frame exception
+				throw SkipFrameException("Could not get transform to plane link " + plane_link);
+			}
+
+			// Plane in plane_link is z=0. Normal (0,0,1), Point (0,0,0).
+			// Transform to cloud frame.
+			Eigen::Quaterniond q(
+				transform.transform.rotation.w,
+				transform.transform.rotation.x,
+				transform.transform.rotation.y,
+				transform.transform.rotation.z
+			);
+			Eigen::Vector3d n = q * Eigen::Vector3d::UnitZ();
+			Eigen::Vector3d p0(
+				transform.transform.translation.x,
+				transform.transform.translation.y,
+				transform.transform.translation.z
+			);
+
+			// Plane equation: n.x + d = 0 -> n.(p - p0) = 0 -> n.p - n.p0 = 0
+			double d = -n.dot(p0);
+			Eigen::Vector4d coefficients(n.x(), n.y(), n.z(), d);
+
+			PartitioningCluster plane_cluster;
+			plane_cluster.attributes["model"] = PlaneModel{coefficients};
+
+			// remove points whose z value is bellow the plane (with some threshold)
+			#pragma omp parallel
+			{
+				std::vector<size_t> local_indices;
+				#pragma omp for nowait
+				for (size_t i = 0; i < input_cloud_->points_.size(); ++i) {
+					const auto& pt = input_cloud_->points_[i];
+					double plane_z = -(coefficients(0) * pt.x() + coefficients(1) * pt.y() + coefficients(3)) / coefficients(2);
+					if (pt.z() < plane_z + distance_threshold) {
+						local_indices.push_back(mapToOriginalIndex(i));
+					}
+				}
+				#pragma omp critical
+				plane_cluster.indices.insert(plane_cluster.indices.end(), local_indices.begin(), local_indices.end());
+			}
+
+			context.clusters_registry[plane_tag].push_back(plane_cluster);
+		}
+	};
+
 	class RansacSegmentation : public PartitioningStrategy
 	{
 
@@ -143,5 +219,6 @@ namespace sfframework
 
 } // namespace sfframework
 
+PLUGINLIB_EXPORT_CLASS(sfframework::TrivialPlaneSegmentation, sfframework::PartitioningStrategy)
 PLUGINLIB_EXPORT_CLASS(sfframework::RansacSegmentation, sfframework::PartitioningStrategy)
 PLUGINLIB_EXPORT_CLASS(sfframework::DBSCAN, sfframework::PartitioningStrategy)

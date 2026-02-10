@@ -7,6 +7,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include "sfframework/partitioning_context.hpp"
 #include "sfframework/sfgenerator_utils.hpp"
+#include <tf2_ros/buffer.h>
 
 namespace sfframework
 {
@@ -17,10 +18,11 @@ namespace sfframework
 
     virtual ~PartitioningStrategy() = default;
 
-    void initialize(rclcpp::Node *node, const std::string &name)
+    void initialize(rclcpp::Node *node, const std::string &name, tf2_ros::Buffer* tf_buffer)
     {
       node_ = node;
       name_ = name;
+      tf_buffer_ = tf_buffer;
 
       node_->declare_parameter(name_ + ".input_tags", std::vector<std::string>());
       node_->declare_parameter(name_ + ".invert_selection", false);
@@ -70,6 +72,7 @@ namespace sfframework
 
     std::string name_;
     rclcpp::Node *node_;
+    tf2_ros::Buffer *tf_buffer_;
     std::shared_ptr<const open3d::geometry::PointCloud> input_cloud_;
     std::vector<size_t> indices_map_;
   };

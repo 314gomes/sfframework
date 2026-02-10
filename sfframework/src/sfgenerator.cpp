@@ -23,6 +23,9 @@ SFGenerator::SFGenerator()
   this->lidar_callback_group_ = this->create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
 
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
   auto sub_opt = rclcpp::SubscriptionOptions();
   sub_opt.callback_group = lidar_callback_group_;
 
@@ -95,7 +98,7 @@ SFGenerator::SFGenerator()
     std::string type = this->get_parameter(name + ".plugin").as_string();
     try {
       auto partitioner = partitioner_loader_.createSharedInstance(type);
-      partitioner->initialize(this, name);
+      partitioner->initialize(this, name, this->tf_buffer_.get());
       partitioners_.push_back(partitioner);
       RCLCPP_INFO(this->get_logger(), "Successfully loaded partitioner plugin '%s' of type '%s'", name.c_str(), type.c_str());
     } catch (pluginlib::PluginlibException & ex) {
@@ -139,9 +142,6 @@ SFGenerator::SFGenerator()
     this->get_parameter("grid_map_geometry.cell_size").as_double()
   );
 
-  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
-  
   RCLCPP_INFO(this->get_logger(),
     "Node [%s] started.", this->get_name());
 }
@@ -182,11 +182,10 @@ void SFGenerator::rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ro
     }
 }
 
-void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, std::string frame_id)
+void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, std_msgs::msg::Header& header)
 {
   // Set the header
-  ros_pc->header.stamp = this->get_clock()->now();
-  ros_pc->header.frame_id = frame_id;
+  ros_pc->header = header;
 
   // Prepare the modifier 
   sensor_msgs::PointCloud2Modifier modifier(*ros_pc);
@@ -236,7 +235,8 @@ void SFGenerator::Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud
 }
 
 void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg){
-  auto tstart = this->get_clock()->now();
+  // get wall clock time at the start of the callback for later use in cycle time calculation
+  auto tstart = std::chrono::high_resolution_clock::now();  
   
   this->cloud = *msg;
   
@@ -270,7 +270,10 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   }
   // TODO: consider changing logic to downsample first and then apply transform using o3d_pc->Transform()
   tf2::doTransform(cloud, cloud, tf_cloud_to_grid_frame);
-  
+
+  // save transformed pointcloud header for later use
+  auto transformed_cloud_header = cloud.header;
+
   auto o3d_pc = std::make_shared<open3d::geometry::PointCloud>();
   rosToOpen3d(std::make_shared<sensor_msgs::msg::PointCloud2>(cloud),
    o3d_pc,
@@ -288,12 +291,13 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   if (this->get_parameter("publish_filtered_pointcloud").as_bool()) {
     auto intermediate_pc = std::make_shared<sensor_msgs::msg::PointCloud2>();
 
-    Open3dToRos(o3d_pc, intermediate_pc, this->get_parameter("gridmap_frame_id").as_string());
+    Open3dToRos(o3d_pc, intermediate_pc, transformed_cloud_header);
     this->filtered_pointcloud_publisher_->publish(*intermediate_pc);
   }
   
   // run every partitioner from list of plugins in order
   PartitioningContext context;
+  context.header = transformed_cloud_header;
   context.cloud = o3d_pc;
   try {
     for (const auto & partitioner : partitioners_) {
@@ -384,25 +388,25 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
     }
     
     auto partitioned_pc_ros2 = std::make_shared<sensor_msgs::msg::PointCloud2>();
-    Open3dToRos(partitioned_pc_o3d, partitioned_pc_ros2, this->get_parameter("gridmap_frame_id").as_string());
+    Open3dToRos(partitioned_pc_o3d, partitioned_pc_ros2, transformed_cloud_header);
     this->partitioned_pointcloud_publisher_->publish(*partitioned_pc_ros2);
 
   }
 
-  try
-  {
-    o3d_pc = o3d_pc->SelectByIndex(context.clusters_registry.at("ground").at(0).indices, true);
-  }
-  catch(const std::out_of_range& e)
-  {
-    RCLCPP_WARN(this->get_logger(), "No ground cluster found, skipping potential field generation.");
-    return;
-  }
+  // try
+  // {
+  //   o3d_pc = o3d_pc->SelectByIndex(context.clusters_registry.at("ground").at(0).indices, true);
+  // }
+  // catch(const std::out_of_range& e)
+  // {
+  //   RCLCPP_WARN(this->get_logger(), "No ground cluster found, skipping potential field generation.");
+  //   return;
+  // }
 
-  if(o3d_pc->points_.size() == 0){
-    RCLCPP_WARN(this->get_logger(), "non-ground cluster is empty, skipping potential field generation.");
-    return;
-  }
+  // if(o3d_pc->points_.size() == 0){
+  //   RCLCPP_WARN(this->get_logger(), "non-ground cluster is empty, skipping potential field generation.");
+  //   return;
+  // }
 
   // Calculate potential field from o3d point cloud
   for (const auto & sf_strategy : sf_strategies_) {
@@ -417,8 +421,9 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   
   grid_map_publisher_->publish(*message);
   
-  auto tend = this->get_clock()->now();
-  // RCLCPP_INFO(this->get_logger(), "Cycle time: %f ms", (tend - tstart).nanoseconds() / 1000000.0);
+  auto tend = std::chrono::high_resolution_clock::now();
+  auto duration = tend - tstart;
+  // RCLCPP_INFO(this->get_logger(), "Cycle time: %f ms", duration.count() * 1e-6);
   
 }
     

@@ -9,4 +9,10 @@
       DBSCAN clustering using Open3d's implementation.
     </description>
   </class>
+  <!-- TrivialPlaneSegmentation -->
+  <class name="sfframework/TrivialPlaneSegmentation" type="sfframework::TrivialPlaneSegmentation" base_class_type="sfframework::PartitioningStrategy">
+    <description>
+      A trivial plane segmentation strategy that uses a transform to the plane.
+    </description>
+  </class>
 </library>

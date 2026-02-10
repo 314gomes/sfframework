@@ -4,10 +4,13 @@
 #include <memory>
 #include <open3d/Open3D.h>
 #include <sfframework/partitioning_cluster.hpp>
+#include <std_msgs/msg/header.hpp>
 
 struct PartitioningContext {
     // Read-Only pointer to the raw sensor data
     std::shared_ptr<const open3d::geometry::PointCloud> cloud;
+    // Read-Only header associated with the data
+    std_msgs::msg::Header header;
 
     // The Registry: Maps a semantic Tag to a list of Clusters
     // e.g., "ground" -> [Cluster], "obstacles" -> [Cluster, Cluster...]

@@ -1,3 +1,6 @@
+#ifndef SFFRAMEWORK_SFGENERATOR_HPP_
+#define SFFRAMEWORK_SFGENERATOR_HPP_
+
 #include "rclcpp/rclcpp.hpp"
 #include "grid_map_core/GridMap.hpp"
 #include "grid_map_msgs/msg/grid_map.hpp"
@@ -35,7 +38,7 @@ class SFGenerator : public rclcpp::Node{
 		std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
 		void rosToOpen3d(const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, float dist_limit, float max_height, float min_height);
-		void Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud>& o3d_pc, const sensor_msgs::msg::PointCloud2::SharedPtr& ros_pc, std::string frame_id);
+		void Open3dToRos(const std::shared_ptr<open3d::geometry::PointCloud> &o3d_pc, const sensor_msgs::msg::PointCloud2::SharedPtr &ros_pc, std_msgs::msg::Header &header);
 
 		pluginlib::ClassLoader<sfframework::FilterBase> filter_loader_;
 		pluginlib::ClassLoader<sfframework::PartitioningStrategy> partitioner_loader_;
@@ -45,3 +48,5 @@ class SFGenerator : public rclcpp::Node{
 		std::vector<std::shared_ptr<sfframework::PartitioningStrategy>> partitioners_;
 		std::vector<std::shared_ptr<sfframework::SFStrategy>> sf_strategies_;
 	};
+
+#endif  // SFFRAMEWORK_SFGENERATOR_HPP_

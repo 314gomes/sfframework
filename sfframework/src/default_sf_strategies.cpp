@@ -308,7 +308,7 @@ namespace sfframework
       latest_plane_model_.coefficients = (1 - Ts_over_T) * latest_plane_model_.coefficients + Ts_over_T * Eigen::Vector4d(
         transformed_msg.linear_acceleration.x,
         transformed_msg.linear_acceleration.y,
-        transformed_msg.linear_acceleration.z,
+        - transformed_msg.linear_acceleration.z,
         0  
       );
 

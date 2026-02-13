@@ -2,9 +2,9 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>sfframework_simulation</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="joaop.gomes@usp.br">gomes</maintainer>
+  <version>0.0.1</version>
+  <description>Package to simulate the sfframework package.</description>
+  <maintainer email="joaop.gomes@usp.br">João Pedro Gomes</maintainer>
   <license>GPL-3.0-only</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

@@ -5,9 +5,13 @@
 #include <omp.h>
 #include "sensor_msgs/msg/imu.hpp"
 #include <Eigen/Geometry>
-#include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
-#include "imu_transformer/tf2_sensor_msgs.h"
+
+#if __has_include("tf2_sensor_msgs/tf2_sensor_msgs.hpp")
+  #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
+#elif __has_include("imu_transformer/tf2_sensor_msgs.h")
+  #include "imu_transformer/tf2_sensor_msgs.h"
+#endif
 
 namespace sfframework
 {
@@ -47,7 +51,7 @@ namespace sfframework
 
       // Distance above which the potential is negligible and we can skip computation for efficiency
       auto sigma = this->node_->get_parameter(name_ + ".sigma").as_double();
-      auto distance_threshold_sqrd = sigma * sigma * 9.0;
+      auto distance_threshold_sqrd = sigma * 9.0;
       auto A = this->node_->get_parameter(name_ + ".A").as_double();
       auto two_sigma_sqrd = 2.0 * sigma * sigma;
       auto output_layer = this->node_->get_parameter(name_ + ".output_layer").as_string();

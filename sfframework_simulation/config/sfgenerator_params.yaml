@@ -2,6 +2,7 @@
   sfgenerator:
     ros__parameters:
       use_sim_time: true
+      grid_map_frame_id: robot_base_footprint
       filter_plugins: ['voxel_downsample', stat_outlier_removal]
       stat_outlier_removal:
         plugin: 'sfframework/StatisticalOutlierRemovalFilter'
@@ -23,10 +24,14 @@
         input_tags: ['ground']
         invert_selection: true
         plugin: 'sfframework/DBSCAN'
-      sf_strategy_plugins: ['gaussian_repulsion', 'parabolic_rest', 'plane_inclination', 'weighted_summation']
+      sf_strategy_plugins: ['gaussian_repulsion', 'sdf', 'parabolic_rest', 'plane_inclination', 'weighted_summation']
       gaussian_repulsion:
         plugin: 'sfframework/GaussianRepulsion'
         input_tags: ['clusters']
+      sdf:
+        plugin: 'sfframework/DistanceField1'
+        input_tags: ['clusters']
+        seer_frame_id: robot_top_lidar_link
       parabolic_rest:
         plugin: 'sfframework/ParabolicRest'
       plane_inclination:

@@ -17,6 +17,7 @@ find_package(pluginlib REQUIRED)
 find_package(grid_map_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(grid_map_core REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(grid_map_ros REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
@@ -43,6 +44,7 @@ ament_target_dependencies(sfgenerator
   tf2_ros
   tf2_sensor_msgs
   tf2_geometry_msgs
+  geometry_msgs
 )
 
 # Build the filters plugin library
@@ -111,8 +113,11 @@ ament_target_dependencies(sfframework_default_sf_strategies
   sensor_msgs
   tf2_sensor_msgs
   tf2_geometry_msgs
-  imu_transformer
 )
+
+if(imu_transformer_FOUND)
+  ament_target_dependencies(sfframework_default_sf_strategies imu_transformer)
+endif()
 
 target_include_directories(sfframework_default_sf_strategies PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

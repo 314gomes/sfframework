@@ -6,6 +6,9 @@
 #include "sensor_msgs/msg/imu.hpp"
 #include <Eigen/Geometry>
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include <limits>
+#include <chrono>
+#include <std_msgs/msg/float64.hpp>
 
 #if __has_include("tf2_sensor_msgs/tf2_sensor_msgs.hpp")
   #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
@@ -74,13 +77,200 @@ namespace sfframework
           {
             // Potential field decreases with distance_sqrd
             double potential = A * std::exp(-distance_sqrd / two_sigma_sqrd);
-            if (grid_map.at(output_layer, *iterator) < potential)
-            {
-              grid_map.at(output_layer, *iterator) = potential;
+            // Atomically update the cell with the maximum potential to prevent race conditions.
+            float& cell_value = grid_map.at(output_layer, *iterator);
+            float potential_f = static_cast<float>(potential);
+            if (potential_f > cell_value) {
+              #pragma omp critical
+              if (potential_f > cell_value) cell_value = potential_f;
             }
           }
         }
       }
+    }
+  };
+
+  class DistanceField1 : public SFStrategy
+  {
+    // rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr debug_gridmap_publisher_;
+    //debug polygon publisher
+    rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr polygon_publisher_;
+    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr process_time_publisher_;
+
+    void onInitialize(grid_map::GridMap &grid_map) override
+    {
+      node_->declare_parameter(name_ + ".input_tags", std::vector<std::string>());
+      node_->declare_parameter(name_ + ".invert_selection", false);
+      node_->declare_parameter(name_ + ".output_layer", "distance_field");
+      node_->declare_parameter(name_ + ".seer_frame_id", "camera_link");
+
+      grid_map.add(node_->get_parameter(name_ + ".output_layer").as_string(), 0.0);
+    
+      // new debug gridmap publisher
+      // debug_gridmap_publisher_ = node_->create_publisher<grid_map_msgs::msg::GridMap>("~/debug_gridmap", 10);
+
+      // debug polygon publisher
+      polygon_publisher_ = node_->create_publisher<geometry_msgs::msg::PolygonStamped>("~/debug_polygon", 10);
+      process_time_publisher_ = node_->create_publisher<std_msgs::msg::Float64>("~/" + name_ + "/process_time", 10);
+    }
+    void onProcess(PartitioningContext &context, grid_map::GridMap &grid_map) override
+    {
+      auto tstart = std::chrono::high_resolution_clock::now();
+
+      auto input_tags = this->node_->get_parameter(name_ + ".input_tags").as_string_array();
+      auto invert_selection = this->node_->get_parameter(name_ + ".invert_selection").as_bool();
+      auto output_layer = this->node_->get_parameter(name_ + ".output_layer").as_string();
+      auto seer_frame_id = this->node_->get_parameter(name_ + ".seer_frame_id").as_string();
+      
+      // get seer position in grid map frame
+      geometry_msgs::msg::TransformStamped seer_transform;
+      try {
+        seer_transform = tf_buffer_->lookupTransform(
+          grid_map.getFrameId(),
+          seer_frame_id,
+          rclcpp::Time(context.header.stamp)
+        );
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_WARN(node_->get_logger(), "%s: %s", this->name_.c_str(), ex.what());
+        return;
+      }
+      // Reset the layer to zero before accumulating new values
+      // grid_map[output_layer].setConstant(std::numeric_limits<float>::infinity());
+      // grid_map[output_layer].setConstant(0.0);
+      grid_map[output_layer].setConstant(std::numeric_limits<float>::quiet_NaN());
+
+      // squish z coordinate of seer position since grid map is 2D
+      Eigen::Vector2d seer_position(seer_transform.transform.translation.x, seer_transform.transform.translation.y);
+
+      // attempt to get point cloud from context
+      std::shared_ptr<const open3d::geometry::PointCloud> o3d_pc;
+      try
+      {
+        o3d_pc = sfframework::SFGeneratorUtils::cloud_from_tags(
+          context,
+          input_tags,
+          invert_selection
+        );
+      }
+      catch (const std::out_of_range &e)
+      {
+        RCLCPP_WARN(node_->get_logger(), "SF strategy plugin [%s] tried to find a list of clusters at a tag but it is missing. Skipping...", name_.c_str());
+        return;
+      }
+
+      // calculate point angles relative to seer position
+
+      std::vector<std::tuple<double, double, Eigen::Vector3d>> angles_distances2_points;
+      angles_distances2_points.reserve(o3d_pc->points_.size());
+      for (const auto& pt : o3d_pc->points_) {
+        double distance = (pt.head<2>() - seer_position).squaredNorm();
+        if (distance < 1e-6) {
+          continue; // Skip points exactly on or extremely close to the sensor
+        }
+        double angle = std::atan2(pt(1) - seer_position(1), pt(0) - seer_position(0));
+        angles_distances2_points.emplace_back(angle, distance, pt);
+      }
+      // sort points by angle
+      std::sort(angles_distances2_points.begin(), angles_distances2_points.end(), [](const std::tuple<double, double, Eigen::Vector3d>& a, const std::tuple<double, double, Eigen::Vector3d>& b) {
+        return std::get<0>(a) < std::get<0>(b);
+      });
+
+
+      // various parameters used to the filter 
+      // basically the minimum feature size = 2 * grid cell size (Nyquist?)
+      double min_distance_diff_sqrd = 4 * grid_map.getResolution() * grid_map.getResolution();
+      // defined as maximum distance from seer to one of the map corners
+      // points further than this distance can be "ignored"
+      grid_map::Position map_center = grid_map.getPosition();
+      grid_map::Length map_length = grid_map.getLength();
+      double max_distance_from_seer_sqrd = 0.0;
+      for (double sign_x : {-1.0, 1.0}) {
+        for (double sign_y : {-1.0, 1.0}) {
+          Eigen::Vector2d corner(map_center(0) + sign_x * map_length(0) / 2.0, map_center(1) + sign_y * map_length(1) / 2.0);
+          max_distance_from_seer_sqrd = std::max(max_distance_from_seer_sqrd, (corner - seer_position).squaredNorm());
+        }
+      }
+      double max_distance_from_seer = std::sqrt(max_distance_from_seer_sqrd);
+
+      // calculate minimum angle required to not skip a cell at the furthest point
+      double angle_resolution = std::atan2(grid_map.getResolution()*2, std::sqrt(max_distance_from_seer_sqrd));
+
+      // RCLCPP_INFO(node_->get_logger(), "DistanceField1 strategy parameters: min_distance_diff=%f, max_distance_from_seer=%f, angle_resolution=%f", std::sqrt(min_distance_diff_sqrd), std::sqrt(max_distance_from_seer_sqrd), angle_resolution);
+
+      // sort of complex point filter
+      std::vector<std::tuple<double, double, Eigen::Vector2d>> filtered_points;
+      
+      filtered_points.reserve(angles_distances2_points.size());
+
+      for (const auto& adp_tuple : angles_distances2_points) {
+        double current_angle = std::get<0>(adp_tuple);
+        double current_dist_sqrd = std::get<1>(adp_tuple);
+        Eigen::Vector2d current_pt = std::get<2>(adp_tuple).head<2>();
+
+        // project point to circle if distance is too big
+        if (current_dist_sqrd > max_distance_from_seer_sqrd) {
+          Eigen::Vector2d direction = (current_pt - seer_position).normalized();
+          current_pt = seer_position + direction * max_distance_from_seer;
+          current_dist_sqrd = max_distance_from_seer_sqrd;
+        }
+
+        if (filtered_points.empty()) {
+          filtered_points.emplace_back(current_angle, current_dist_sqrd, current_pt);
+          continue;
+        } 
+        auto last_tuple = filtered_points.back();
+
+        // remove points based on angle difference (relative to seer) between each other
+        double angle_diff = std::abs(current_angle - std::get<0>(last_tuple));
+        if (angle_diff > M_PI) {
+          angle_diff = 2.0 * M_PI - angle_diff;
+        }
+        
+        // if angle difference is smaller than the resolution, only keep the closest point
+        if(angle_diff <= angle_resolution){
+          if (current_dist_sqrd < std::get<1>(last_tuple)) {
+            filtered_points.back() = std::make_tuple(std::get<0>(last_tuple), current_dist_sqrd, current_pt);
+          }
+          continue;
+        }
+        // if angle difference exceeds the resolution and 
+        // the two points are further from each other than the minimum 
+        // distance difference, place points between them
+        // projected on the circle 
+        // also add the current point to the list if it passed the filters
+        else if(current_dist_sqrd > min_distance_diff_sqrd){
+          double angle_to_place = std::get<0>(last_tuple) + angle_resolution;
+          while (angle_to_place < current_angle) {
+            Eigen::Vector2d direction(std::cos(angle_to_place), std::sin(angle_to_place));
+            Eigen::Vector2d new_pt = seer_position + direction * std::sqrt(current_dist_sqrd);
+            filtered_points.emplace_back(angle_to_place, current_dist_sqrd, new_pt);
+            angle_to_place += angle_resolution;
+          }
+        }
+        // if the point passed the filters, add it to the list
+        filtered_points.emplace_back(current_angle, current_dist_sqrd, current_pt);
+      }
+      
+      // construct polygon to be published
+      geometry_msgs::msg::PolygonStamped polygon_msg;
+      polygon_msg.header.frame_id = grid_map.getFrameId();
+      polygon_msg.header.stamp = rclcpp::Time(context.header.stamp);
+      // without seer position
+      for (const auto& tuple : filtered_points) {
+        const auto& pt = std::get<2>(tuple);
+        geometry_msgs::msg::Point32 vertex;
+        vertex.x = pt(0);
+        vertex.y = pt(1);
+        vertex.z = 0.0;
+        polygon_msg.polygon.points.push_back(vertex);
+      }
+      polygon_publisher_->publish(polygon_msg);
+
+      auto tend = std::chrono::high_resolution_clock::now();
+      auto duration = tend - tstart;
+      std_msgs::msg::Float64 time_msg;
+      time_msg.data = duration.count() * 1e-6;
+      process_time_publisher_->publish(time_msg);
     }
   };
 
@@ -327,6 +517,7 @@ namespace sfframework
 } // namespace sfframework
 
 PLUGINLIB_EXPORT_CLASS(sfframework::GaussianRepulsion, sfframework::SFStrategy)
+PLUGINLIB_EXPORT_CLASS(sfframework::DistanceField1, sfframework::SFStrategy)
 PLUGINLIB_EXPORT_CLASS(sfframework::ParabolicRest, sfframework::SFStrategy)
 PLUGINLIB_EXPORT_CLASS(sfframework::WeightedSummation, sfframework::SFStrategy)
 PLUGINLIB_EXPORT_CLASS(sfframework::PlaneInclination, sfframework::SFStrategy)

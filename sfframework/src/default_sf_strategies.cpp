@@ -9,6 +9,9 @@
 #include <limits>
 #include <chrono>
 #include <std_msgs/msg/float64.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 
 #if __has_include("tf2_sensor_msgs/tf2_sensor_msgs.hpp")
   #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
@@ -96,6 +99,53 @@ namespace sfframework
     //debug polygon publisher
     rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr polygon_publisher_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr process_time_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_publisher_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_publisher_;
+
+    void publishDebugData(
+      const std::string& frame_id,
+      rclcpp::Time stamp,
+      const std::vector<std::tuple<double, double, Eigen::Vector2d>>& buckets,
+      int cicle_subs,
+      double angle_resolution,
+      double max_distance)
+    {
+      // construct polygon to be published
+      geometry_msgs::msg::PolygonStamped polygon_msg;
+      polygon_msg.header.frame_id = frame_id;
+      polygon_msg.header.stamp = stamp;
+      // without seer position
+      for (const auto& bucket : buckets) {
+        geometry_msgs::msg::Point32 vertex;
+        vertex.x = std::get<2>(bucket)(0);
+        vertex.y = std::get<2>(bucket)(1);
+        vertex.z = 0.0;
+        polygon_msg.polygon.points.push_back(vertex);
+      }
+      polygon_publisher_->publish(polygon_msg);
+
+      // Publish PointCloud2 message
+      sensor_msgs::msg::PointCloud2 pc_msg;
+      pc_msg.header.frame_id = frame_id;
+      pc_msg.header.stamp = stamp;
+
+      sensor_msgs::PointCloud2Modifier modifier(pc_msg);
+      modifier.setPointCloud2FieldsByString(1, "xyz");
+      modifier.resize(cicle_subs);
+
+      sensor_msgs::PointCloud2Iterator<float> iter_x(pc_msg, "x");
+      sensor_msgs::PointCloud2Iterator<float> iter_y(pc_msg, "y");
+      sensor_msgs::PointCloud2Iterator<float> iter_z(pc_msg, "z");
+
+      for (int i = 0; i < cicle_subs; ++i) {
+        auto& p = std::get<2>(buckets[i]);
+        *iter_x = static_cast<float>(p(0));
+        *iter_y = static_cast<float>(p(1));
+        *iter_z = 0.0f;
+        ++iter_x; ++iter_y; ++iter_z;
+      }
+      pointcloud_publisher_->publish(pc_msg);
+    }
 
     void onInitialize(grid_map::GridMap &grid_map) override
     {
@@ -103,6 +153,9 @@ namespace sfframework
       node_->declare_parameter(name_ + ".invert_selection", false);
       node_->declare_parameter(name_ + ".output_layer", "distance_field");
       node_->declare_parameter(name_ + ".seer_frame_id", "camera_link");
+      node_->declare_parameter(name_ + ".circle_subdivisions", 360);
+      node_->declare_parameter(name_ + ".robot_radius", 0.5);
+      node_->declare_parameter(name_ + ".max_distance", 5.0);
 
       grid_map.add(node_->get_parameter(name_ + ".output_layer").as_string(), 0.0);
     
@@ -112,6 +165,8 @@ namespace sfframework
       // debug polygon publisher
       polygon_publisher_ = node_->create_publisher<geometry_msgs::msg::PolygonStamped>("~/debug_polygon", 10);
       process_time_publisher_ = node_->create_publisher<std_msgs::msg::Float64>("~/" + name_ + "/process_time", 10);
+      pointcloud_publisher_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("~/debug_pointcloud", 10);
+      marker_publisher_ = node_->create_publisher<visualization_msgs::msg::Marker>("~/debug_marker", 10);
     }
     void onProcess(PartitioningContext &context, grid_map::GridMap &grid_map) override
     {
@@ -121,7 +176,12 @@ namespace sfframework
       auto invert_selection = this->node_->get_parameter(name_ + ".invert_selection").as_bool();
       auto output_layer = this->node_->get_parameter(name_ + ".output_layer").as_string();
       auto seer_frame_id = this->node_->get_parameter(name_ + ".seer_frame_id").as_string();
+      auto cicle_subs = this->node_->get_parameter(name_ + ".circle_subdivisions").as_int();
+      auto robot_radius = this->node_->get_parameter(name_ + ".robot_radius").as_double();
+      auto max_distance_from_seer = this->node_->get_parameter(name_ + ".max_distance").as_double();
       
+      double epsilon = 1e-6;
+
       // get seer position in grid map frame
       geometry_msgs::msg::TransformStamped seer_transform;
       try {
@@ -160,117 +220,205 @@ namespace sfframework
 
       // calculate point angles relative to seer position
 
-      std::vector<std::tuple<double, double, Eigen::Vector3d>> angles_distances2_points;
+      std::vector<std::tuple<double, double, Eigen::Vector2d>> angles_distances2_points;
       angles_distances2_points.reserve(o3d_pc->points_.size());
       for (const auto& pt : o3d_pc->points_) {
-        double distance = (pt.head<2>() - seer_position).squaredNorm();
-        if (distance < 1e-6) {
+        double distance_sq = (pt.head<2>() - seer_position).squaredNorm();
+        if (distance_sq < epsilon) {
           continue; // Skip points exactly on or extremely close to the sensor
         }
         double angle = std::atan2(pt(1) - seer_position(1), pt(0) - seer_position(0));
-        angles_distances2_points.emplace_back(angle, distance, pt);
+        angles_distances2_points.emplace_back(angle, distance_sq, pt.head<2>());
       }
-      // sort points by angle
-      std::sort(angles_distances2_points.begin(), angles_distances2_points.end(), [](const std::tuple<double, double, Eigen::Vector3d>& a, const std::tuple<double, double, Eigen::Vector3d>& b) {
-        return std::get<0>(a) < std::get<0>(b);
-      });
 
+      double max_distance_from_seer_sqrd = max_distance_from_seer * max_distance_from_seer;
 
-      // various parameters used to the filter 
-      // basically the minimum feature size = 2 * grid cell size (Nyquist?)
-      double min_distance_diff_sqrd = 4 * grid_map.getResolution() * grid_map.getResolution();
-      // defined as maximum distance from seer to one of the map corners
-      // points further than this distance can be "ignored"
-      grid_map::Position map_center = grid_map.getPosition();
-      grid_map::Length map_length = grid_map.getLength();
-      double max_distance_from_seer_sqrd = 0.0;
-      for (double sign_x : {-1.0, 1.0}) {
-        for (double sign_y : {-1.0, 1.0}) {
-          Eigen::Vector2d corner(map_center(0) + sign_x * map_length(0) / 2.0, map_center(1) + sign_y * map_length(1) / 2.0);
-          max_distance_from_seer_sqrd = std::max(max_distance_from_seer_sqrd, (corner - seer_position).squaredNorm());
-        }
+      double angle_resolution = 2 * M_PI / cicle_subs;
+
+      // subdivision "bucket" that actually contains only the required point
+      std::vector<std::tuple<double, double, Eigen::Vector2d>> adp_subdivision_buckets(cicle_subs);
+
+      // initialize polygon with points at the limit (circle)
+      for(int i = 0; i < cicle_subs; i++){
+        double angle = angle_resolution * i;
+        std::get<0>(adp_subdivision_buckets[i]) = angle;
+        std::get<1>(adp_subdivision_buckets[i]) = max_distance_from_seer_sqrd;
+        std::get<2>(adp_subdivision_buckets[i]) = Eigen::Vector2d(seer_position(0) + std::cos(angle) * max_distance_from_seer, seer_position(1) + std::sin(angle) * max_distance_from_seer);
       }
-      double max_distance_from_seer = std::sqrt(max_distance_from_seer_sqrd);
 
-      // calculate minimum angle required to not skip a cell at the furthest point
-      double angle_resolution = std::atan2(grid_map.getResolution()*2, std::sqrt(max_distance_from_seer_sqrd));
-
-      // RCLCPP_INFO(node_->get_logger(), "DistanceField1 strategy parameters: min_distance_diff=%f, max_distance_from_seer=%f, angle_resolution=%f", std::sqrt(min_distance_diff_sqrd), std::sqrt(max_distance_from_seer_sqrd), angle_resolution);
-
-      // sort of complex point filter
-      std::vector<std::tuple<double, double, Eigen::Vector2d>> filtered_points;
-      
-      filtered_points.reserve(angles_distances2_points.size());
-
-      for (const auto& adp_tuple : angles_distances2_points) {
-        double current_angle = std::get<0>(adp_tuple);
-        double current_dist_sqrd = std::get<1>(adp_tuple);
-        Eigen::Vector2d current_pt = std::get<2>(adp_tuple).head<2>();
-
-        // project point to circle if distance is too big
-        if (current_dist_sqrd > max_distance_from_seer_sqrd) {
-          Eigen::Vector2d direction = (current_pt - seer_position).normalized();
-          current_pt = seer_position + direction * max_distance_from_seer;
-          current_dist_sqrd = max_distance_from_seer_sqrd;
+      // for each bucket, get correct point
+      for(const auto& pt : angles_distances2_points){
+        double p_angle = std::get<0>(pt);
+        if (p_angle < 0.0) {
+          p_angle += 2.0 * M_PI;
         }
-
-        if (filtered_points.empty()) {
-          filtered_points.emplace_back(current_angle, current_dist_sqrd, current_pt);
-          continue;
-        } 
-        auto last_tuple = filtered_points.back();
-
-        // remove points based on angle difference (relative to seer) between each other
-        double angle_diff = std::abs(current_angle - std::get<0>(last_tuple));
-        if (angle_diff > M_PI) {
-          angle_diff = 2.0 * M_PI - angle_diff;
-        }
+        double p_distance_sq = std::get<1>(pt);
         
-        // if angle difference is smaller than the resolution, only keep the closest point
-        if(angle_diff <= angle_resolution){
-          if (current_dist_sqrd < std::get<1>(last_tuple)) {
-            filtered_points.back() = std::make_tuple(std::get<0>(last_tuple), current_dist_sqrd, current_pt);
-          }
+        // this line defines in which bucket which point ends up
+        int p_idx = static_cast<int>(p_angle / angle_resolution);
+        if (p_idx >= cicle_subs) {
+          p_idx = cicle_subs - 1;
+        }
+
+        double b_distance_sq = std::get<1>(adp_subdivision_buckets[p_idx]); 
+      
+        if(p_distance_sq < b_distance_sq){
+          adp_subdivision_buckets[p_idx] = pt;
+        }
+
+      }
+
+      // BPA inspired hole filling
+      std::vector<int> removed_points_idx;
+      for(int i = 0; i < cicle_subs; i++){
+        const auto& p1 = adp_subdivision_buckets[i];
+        double p1_distance_sq = std::get<1>(p1);
+
+        if (p1_distance_sq >= max_distance_from_seer_sqrd - epsilon) {
           continue;
         }
-        // if angle difference exceeds the resolution and 
-        // the two points are further from each other than the minimum 
-        // distance difference, place points between them
-        // projected on the circle 
-        // also add the current point to the list if it passed the filters
-        else if(current_dist_sqrd > min_distance_diff_sqrd){
-          double angle_to_place = std::get<0>(last_tuple) + angle_resolution;
-          while (angle_to_place < current_angle) {
-            Eigen::Vector2d direction(std::cos(angle_to_place), std::sin(angle_to_place));
-            Eigen::Vector2d new_pt = seer_position + direction * std::sqrt(current_dist_sqrd);
-            filtered_points.emplace_back(angle_to_place, current_dist_sqrd, new_pt);
-            angle_to_place += angle_resolution;
+
+        // Calculate the angular width of the shadow cast by this point
+        // sin(angle_diff/2) = (robot_radius/2) / distance  
+        // => angle_diff/2 = asin(robot_radius / (2*distance))
+        // => angle_diff = 2 * asin(robot_radius / (2 * distance)) (clip to) pi/2
+        // => bucket_diff = angle_diff / angle_resolution
+        double ratio = robot_radius / (2*std::sqrt(p1_distance_sq));
+        double bucket_diff = (ratio >= 1.0) ? (M_PI / 2.0) / angle_resolution : (2 * std::asin(ratio)) / angle_resolution;
+        int bucket_diff_int = static_cast<int>(std::ceil(bucket_diff));
+
+        // propagate forward (positive angle)
+        for (int j = bucket_diff_int; j > 0; j--) {
+          int target_idx = (i + j) % cicle_subs;
+          auto p2 = adp_subdivision_buckets[target_idx];
+
+          if(std::get<1>(p2) >= max_distance_from_seer_sqrd - epsilon){
+            continue;
           }
+
+
+          auto v = (std::get<2>(p2) - std::get<2>(p1));
+          auto d = v.norm();
+
+          if(d > 2 * robot_radius - epsilon){
+            continue;
+          }
+
+          // Find the midpoint between p1 and p2
+          auto pm = (std::get<2>(p2) + std::get<2>(p1))/2;
+          // Distance from midpoint to the circle's center
+          double val = robot_radius * robot_radius - (d*d/4.0);
+          auto h = std::sqrt(std::max(0.0, val));
+          auto v_perp = Eigen::Vector2d(-v(1), v(0)).normalized(); // Perpendicular vector to (p2-p1) in XY plane
+          // Calculate dot product of vector from seer_position to midpoint with v_perp
+          // This determines which side of the line (p1, p2) the seer is, guiding the choice of circle center.
+          auto dot_k = (pm - seer_position).dot(v_perp);
+
+          // Select the circle center that is closest to the origin
+          Eigen::Vector2d c;
+          if(dot_k < 0){
+            c = pm + h*v_perp;
+          }
+          else{
+            c = pm - h*v_perp;
+          }
+
+          // check if there are no other points inside the circle
+          // and the pair of points is closest than other points
+          bool should_continue = false;
+          // std::string rejection_reason = "";
+          for(int step = 1; step < j; step++){
+            int target_idx_k = (i + step) % cicle_subs;
+            auto p3 = adp_subdivision_buckets[target_idx_k];
+
+            auto p3_distance_from_seer_sq = std::get<1>(p3);
+            
+            double t = static_cast<double>(step) / j;
+            Eigen::Vector2d interpolated_p = (1 - t) * std::get<2>(p1) + t * std::get<2>(p2);
+            if (p3_distance_from_seer_sq < (interpolated_p - seer_position).squaredNorm()){
+              should_continue = true;
+              // rejection_reason = "p3 is closer to the sensor than the interpolated line segment";
+              break;
+            }
+
+            auto vec_c = (std::get<2>(p3) - c);
+            auto dist_c = vec_c.norm();
+            if(dist_c < robot_radius){
+              should_continue = true;
+              // rejection_reason = "p3 is inside the proposed circle";
+              break;
+            }
+          }
+
+          if(should_continue){
+            // RCLCPP_INFO(node_->get_logger(), "Circle rejected between i=%d and j=%d: %s", i, j, rejection_reason.c_str());
+            
+            // visualization_msgs::msg::Marker marker;
+            // marker.header.frame_id = grid_map.getFrameId();
+            // marker.header.stamp = rclcpp::Time(context.header.stamp);
+            // marker.ns = "rejected_circles";
+            // marker.id = 0;
+            // marker.type = visualization_msgs::msg::Marker::CYLINDER;
+            // marker.action = visualization_msgs::msg::Marker::ADD;
+            // marker.pose.position.x = c.x();
+            // marker.pose.position.y = c.y();
+            // marker.pose.position.z = 0.05;
+            // marker.pose.orientation.w = 1.0;
+            // marker.scale.x = robot_radius * 2.0;
+            // marker.scale.y = robot_radius * 2.0;
+            // marker.scale.z = 0.05;
+            // marker.color.r = 1.0;
+            // marker.color.g = 0.0;
+            // marker.color.b = 0.0;
+            // marker.color.a = 0.5;
+            
+            // marker_publisher_->publish(marker);
+            
+            // publishDebugData(grid_map.getFrameId(), rclcpp::Time(context.header.stamp), 
+            //       adp_subdivision_buckets, cicle_subs, angle_resolution, 
+            //       max_distance_from_seer);
+            
+            // char x;
+            // std::cin >> x;
+            continue;
+          }
+
+          // fill from i to target_idx with the line segment p1 -> p2
+          // (by marking these indices for removal)
+          for (int step = 1; step < j; step++) {
+            int target_idx_k = (i + step) % cicle_subs;
+            removed_points_idx.push_back(target_idx_k);
+          }
+          // mark 
+
+          // Skip ahead over the newly filled virtual points to prevent recursive shadow casting
+          i += j - 1;
+          break;
         }
-        // if the point passed the filters, add it to the list
-        filtered_points.emplace_back(current_angle, current_dist_sqrd, current_pt);
+
       }
-      
-      // construct polygon to be published
-      geometry_msgs::msg::PolygonStamped polygon_msg;
-      polygon_msg.header.frame_id = grid_map.getFrameId();
-      polygon_msg.header.stamp = rclcpp::Time(context.header.stamp);
-      // without seer position
-      for (const auto& tuple : filtered_points) {
-        const auto& pt = std::get<2>(tuple);
-        geometry_msgs::msg::Point32 vertex;
-        vertex.x = pt(0);
-        vertex.y = pt(1);
-        vertex.z = 0.0;
-        polygon_msg.polygon.points.push_back(vertex);
+
+      // remove points from list of points
+      std::sort(removed_points_idx.begin(), removed_points_idx.end());
+      removed_points_idx.erase(std::unique(removed_points_idx.begin(), removed_points_idx.end()), removed_points_idx.end());
+      for(int i = removed_points_idx.size() - 1; i >= 0; i--){
+        adp_subdivision_buckets.erase(adp_subdivision_buckets.begin() + removed_points_idx[i]);
       }
-      polygon_publisher_->publish(polygon_msg);
+
+
+
+      publishDebugData(grid_map.getFrameId(), rclcpp::Time(context.header.stamp), 
+                       adp_subdivision_buckets, adp_subdivision_buckets.size(), angle_resolution, 
+                       max_distance_from_seer);
 
       auto tend = std::chrono::high_resolution_clock::now();
       auto duration = tend - tstart;
       std_msgs::msg::Float64 time_msg;
-      time_msg.data = duration.count() * 1e-6;
+      time_msg.data = duration.count() * epsilon;
       process_time_publisher_->publish(time_msg);
+      // wait for next frame for debug
+      // char x;
+      // std::cin >> x;
     }
   };
 

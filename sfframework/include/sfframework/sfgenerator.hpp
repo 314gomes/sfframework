@@ -5,6 +5,7 @@
 #include "grid_map_core/GridMap.hpp"
 #include "grid_map_msgs/msg/grid_map.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "std_msgs/msg/float64.hpp"
 #include "grid_map_ros/grid_map_ros.hpp"
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
@@ -25,8 +26,10 @@ class SFGenerator : public rclcpp::Node{
 
 		rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud2_subscription_;
 		rclcpp::Publisher<grid_map_msgs::msg::GridMap>::SharedPtr grid_map_publisher_;
+		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr default_filtered_pointcloud_publisher_;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr filtered_pointcloud_publisher_;
 		rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr partitioned_pointcloud_publisher_;
+		rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr process_time_publisher_;
 		void pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
 
 

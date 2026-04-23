@@ -11,6 +11,7 @@
 #include <std_msgs/msg/float64.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
 #if __has_include("tf2_sensor_msgs/tf2_sensor_msgs.hpp")
@@ -21,6 +22,8 @@
 
 namespace sfframework
 {
+  double epsilon = 1e-6;
+
   class GaussianRepulsion : public SFStrategy
   {
     void onInitialize(grid_map::GridMap &grid_map) override
@@ -99,6 +102,7 @@ namespace sfframework
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr process_time_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr laserscan_publisher_;
 
     void publishDebugData(
       const std::string& frame_id,
@@ -127,13 +131,13 @@ namespace sfframework
 
       sensor_msgs::PointCloud2Modifier modifier(pc_msg);
       modifier.setPointCloud2FieldsByString(1, "xyz");
-      modifier.resize(circle_subdivisions);
+      modifier.resize(radial_buckets.size());
 
       sensor_msgs::PointCloud2Iterator<float> iter_x(pc_msg, "x");
       sensor_msgs::PointCloud2Iterator<float> iter_y(pc_msg, "y");
       sensor_msgs::PointCloud2Iterator<float> iter_z(pc_msg, "z");
 
-      for (int i = 0; i < circle_subdivisions; ++i) {
+      for (long unsigned int i = 0; i < radial_buckets.size(); ++i) {
         auto& p = std::get<2>(radial_buckets[i]);
         *iter_x = static_cast<float>(p(0));
         *iter_y = static_cast<float>(p(1));
@@ -141,14 +145,112 @@ namespace sfframework
         ++iter_x; ++iter_y; ++iter_z;
       }
       pointcloud_publisher_->publish(pc_msg);
+
+      // Publish LaserScan message
+      sensor_msgs::msg::LaserScan scan_msg;
+      scan_msg.header.frame_id = frame_id;
+      scan_msg.header.stamp = stamp;
+      scan_msg.angle_min = 0.0;
+      scan_msg.angle_max = 2 * M_PI;
+      scan_msg.angle_increment = angle_resolution;
+      scan_msg.range_min = 0.0;
+      scan_msg.range_max = max_distance;
+
+      scan_msg.ranges.resize(circle_subdivisions, static_cast<float>(max_distance));
+      scan_msg.intensities.resize(circle_subdivisions, 0.0f);
+
+
+      if (radial_buckets.empty()) {
+        laserscan_publisher_->publish(scan_msg);
+        return;
+      }
+
+      int num_buckets = radial_buckets.size();
+      int point_idx = 0; // Index for radial_buckets
+
+      for (int i = 0; i < circle_subdivisions; ++i) {
+        double i_angle = 2 * M_PI * i / circle_subdivisions;
+        
+        int point1_idx = point_idx % num_buckets;
+        int point2_idx = (point_idx + 1) % num_buckets;
+
+        auto radial1 = radial_buckets[point1_idx];
+        auto radial2 = radial_buckets[point2_idx];
+        
+        double angle1 = std::get<0>(radial1);
+        double angle2 = std::get<0>(radial2);
+
+        // Handle wrap-around at the 2*PI boundary
+        if(angle2 < angle1){
+          angle2 += 2 * M_PI;
+        }
+
+        // If the current angle surpasses angle2, advance the bucket points and try again
+        if (i_angle > angle2 && i_angle < angle1 + 2 * M_PI) {
+          point_idx++;
+          i--; 
+          continue;
+        }
+
+        // RCLCPP_INFO(node_->get_logger(), "point_idx: %d, i: %d, i_angle: %f, angle1: %f, angle2: %f", point_idx, i, i_angle, angle1, angle2);
+
+        double p1_dist_sq = std::get<1>(radial1);
+        double p2_dist_sq = std::get<1>(radial2);
+
+        // check if both of the points is too close to max_distance threshold (squared!)
+        double max_dist_sq = max_distance * max_distance;
+        if(p1_dist_sq >= max_dist_sq - 1e-6 && p2_dist_sq >= max_dist_sq - 1e-6) {
+          scan_msg.intensities[i] = point1_idx;
+          continue; // leaves the default max_distance in the range
+        }
+
+        // Using closest point distance (without interpolation for now)
+        // scan_msg.ranges[i] = std::get<2>(radial1).norm();
+        // scan_msg.intensities[i] = point1_idx;
+
+        // determine where in the line segment from p1 to p2 
+        // the ray would cross
+        // u is our directional vector (cos(theta), sin(theta))
+        auto u = Eigen::Vector2d(cos(i_angle), sin(i_angle));
+        
+        // points 1 and 2
+        auto p1 = std::get<2>(radial1);
+        auto p2 = std::get<2>(radial2);
+
+        // line segment direction
+        auto d = p2 - p1;
+
+        // denominator: u x d
+        // u(0)*d(1) - u(1)*d(0) is mathematically u cross d
+        double denominator = u(0) * d(1) - u(1) * d(0);
+
+        // Ensure the ray and the segment are not parallel
+        if (std::abs(denominator) > 1e-9) {
+          // Calculate distance using 2D cross product scalar optimization
+          // distance = (p1 x p2) / (u x d)
+          // Since Eigen::Vector2d doesn't natively have a scalar cross product, we expand it:
+          double distance = (p1.x() * p2.y() - p1.y() * p2.x()) / denominator;
+
+          if (distance > 0) {
+            scan_msg.ranges[i] = distance;
+          }
+        }
+        
+        scan_msg.intensities[i] = point1_idx;
+
+      }
+
+      laserscan_publisher_->publish(scan_msg);
+      // char x;
+      // std::cin >> x;
     }
 
+    
     void onInitialize(grid_map::GridMap &grid_map) override
     {
       node_->declare_parameter(name_ + ".input_tags", std::vector<std::string>());
       node_->declare_parameter(name_ + ".invert_selection", false);
       node_->declare_parameter(name_ + ".output_layer", "distance_field");
-      node_->declare_parameter(name_ + ".seer_frame_id", "camera_link");
       node_->declare_parameter(name_ + ".circle_subdivisions", 360);
       node_->declare_parameter(name_ + ".robot_radius", 0.5);
       node_->declare_parameter(name_ + ".max_distance", 5.0);
@@ -159,6 +261,7 @@ namespace sfframework
       process_time_publisher_ = node_->create_publisher<std_msgs::msg::Float64>("~/" + name_ + "/process_time", 10);
       pointcloud_publisher_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("~/debug_pointcloud", 10);
       marker_publisher_ = node_->create_publisher<visualization_msgs::msg::Marker>("~/debug_marker", 10);
+      laserscan_publisher_ = node_->create_publisher<sensor_msgs::msg::LaserScan>("~/debug_laserscan", 10);
     }
     void onProcess(PartitioningContext &context, grid_map::GridMap &grid_map) override
     {
@@ -167,29 +270,11 @@ namespace sfframework
       auto input_tags = this->node_->get_parameter(name_ + ".input_tags").as_string_array();
       auto invert_selection = this->node_->get_parameter(name_ + ".invert_selection").as_bool();
       auto output_layer = this->node_->get_parameter(name_ + ".output_layer").as_string();
-      auto seer_frame_id = this->node_->get_parameter(name_ + ".seer_frame_id").as_string();
       auto circle_subdivisions = this->node_->get_parameter(name_ + ".circle_subdivisions").as_int();
       auto robot_radius = this->node_->get_parameter(name_ + ".robot_radius").as_double();
       auto max_distance_from_seer = this->node_->get_parameter(name_ + ".max_distance").as_double();
       
-      double epsilon = 1e-6;
-
-      geometry_msgs::msg::TransformStamped seer_transform;
-      try {
-        seer_transform = tf_buffer_->lookupTransform(
-          grid_map.getFrameId(),
-          seer_frame_id,
-          rclcpp::Time(context.header.stamp)
-        );
-      } catch (const tf2::TransformException & ex) {
-        RCLCPP_WARN(node_->get_logger(), "%s: %s", this->name_.c_str(), ex.what());
-        return;
-      }
-      
       grid_map[output_layer].setConstant(std::numeric_limits<float>::quiet_NaN());
-
-      // flatten z-coordinate of seer position to 2D
-      Eigen::Vector2d seer_position(seer_transform.transform.translation.x, seer_transform.transform.translation.y);
 
       std::shared_ptr<const open3d::geometry::PointCloud> o3d_pc;
       try
@@ -209,12 +294,12 @@ namespace sfframework
       std::vector<std::tuple<double, double, Eigen::Vector2d>> point_polar_data;
       point_polar_data.reserve(o3d_pc->points_.size());
       for (const auto& pt : o3d_pc->points_) {
-        double distance_sq = (pt.head<2>() - seer_position).squaredNorm();
+        double distance_sq = pt.head<2>().squaredNorm();
         if (distance_sq < epsilon) {
           // skip points exactly on or extremely close to the sensor
           continue;
         }
-        double angle = std::atan2(pt(1) - seer_position(1), pt(0) - seer_position(0));
+        double angle = std::atan2(pt(1), pt(0));
         point_polar_data.emplace_back(angle, distance_sq, pt.head<2>());
       }
 
@@ -229,13 +314,14 @@ namespace sfframework
         double angle = angle_resolution * i;
         std::get<0>(radial_buckets[i]) = angle;
         std::get<1>(radial_buckets[i]) = max_distance_from_seer_sqrd;
-        std::get<2>(radial_buckets[i]) = Eigen::Vector2d(seer_position(0) + std::cos(angle) * max_distance_from_seer, seer_position(1) + std::sin(angle) * max_distance_from_seer);
+        std::get<2>(radial_buckets[i]) = Eigen::Vector2d(std::cos(angle) * max_distance_from_seer, std::sin(angle) * max_distance_from_seer);
       }
 
-      for(const auto& pt : point_polar_data){
+      for(auto pt : point_polar_data){ // Remove 'const &' to allow modification
         double p_angle = std::get<0>(pt);
         if (p_angle < 0.0) {
           p_angle += 2.0 * M_PI;
+          std::get<0>(pt) = p_angle;
         }
         double p_distance_sq = std::get<1>(pt);
         
@@ -247,7 +333,7 @@ namespace sfframework
         double bucket_distance_sq = std::get<1>(radial_buckets[bucket_idx]); 
       
         if(p_distance_sq < bucket_distance_sq){
-          radial_buckets[bucket_idx] = pt;
+          radial_buckets[bucket_idx] = pt; // Now pt has the corrected 0 to 2pi angle
         }
       }
 
@@ -292,7 +378,7 @@ namespace sfframework
           auto perp_vec = Eigen::Vector2d(-diff_vec(1), diff_vec(0)).normalized(); 
           
           // determine which side of the segment faces the sensor to choose the correct circle center
-          auto dot_k = (midpoint - seer_position).dot(perp_vec);
+          auto dot_k = midpoint.dot(perp_vec);
 
           Eigen::Vector2d circle_center;
           if(dot_k < 0){
@@ -312,7 +398,7 @@ namespace sfframework
             
             double t_interpolation = static_cast<double>(step) / j;
             Eigen::Vector2d interpolated_p = (1 - t_interpolation) * std::get<2>(point1) + t_interpolation * std::get<2>(point2);
-            if (p3_distance_from_seer_sq < (interpolated_p - seer_position).squaredNorm()){
+            if (p3_distance_from_seer_sq < interpolated_p.squaredNorm()){
               should_continue = true;
               break;
             }
@@ -349,13 +435,13 @@ namespace sfframework
       }
 
       publishDebugData(grid_map.getFrameId(), rclcpp::Time(context.header.stamp), 
-                       radial_buckets, radial_buckets.size(), angle_resolution, 
+                       radial_buckets, circle_subdivisions, angle_resolution, 
                        max_distance_from_seer);
 
       auto tend = std::chrono::high_resolution_clock::now();
       auto duration = tend - tstart;
       std_msgs::msg::Float64 time_msg;
-      time_msg.data = duration.count() * epsilon;
+      time_msg.data = std::chrono::duration<double, std::milli>(duration).count();
       process_time_publisher_->publish(time_msg);
     }
   };

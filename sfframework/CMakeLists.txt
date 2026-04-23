@@ -22,10 +22,11 @@ find_package(grid_map_ros REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
-find_package(imu_transformer REQUIRED)
+find_package(imu_transformer)
 find_package(Open3D REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
+# find_package(CGAL REQUIRED)
 
 add_executable(sfgenerator src/sfgenerator.cpp src/sfgenerator_utils.cpp)
 
@@ -33,6 +34,7 @@ target_link_libraries(sfgenerator
 Open3D::Open3D
 Eigen3::Eigen
 OpenMP::OpenMP_CXX
+# CGAL::CGAL
 )
 
 ament_target_dependencies(sfgenerator

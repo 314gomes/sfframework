@@ -12,6 +12,7 @@
 #include <open3d/Open3D.h>
 #include <Eigen/Dense>
 #include <omp.h>
+#include <std_msgs/msg/float64.hpp>
 
 
 SFGenerator::SFGenerator()
@@ -131,8 +132,10 @@ SFGenerator::SFGenerator()
     std::bind(&SFGenerator::pointcloud2_topic_callback, this, std::placeholders::_1),
     sub_opt);
   grid_map_publisher_ = this->create_publisher<grid_map_msgs::msg::GridMap>("grid_map", 10);
+  default_filtered_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("default_filtered_pointcloud", 10);
   filtered_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("filtered_pointcloud", 10);
   this->partitioned_pointcloud_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("partitioned_pointcloud", 10);
+  process_time_publisher_ = this->create_publisher<std_msgs::msg::Float64>("~/process_time", 10);
 
   grid_map_.setGeometry(
     grid_map::Length(
@@ -282,6 +285,13 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
    this->get_parameter("default_filters.min_height").as_double()
   );
 
+  // Publish cloud right after default filters (distance/height + finite checks) are applied.
+  if (this->get_parameter("publish_filtered_pointcloud").as_bool()) {
+    auto default_filtered_pc = std::make_shared<sensor_msgs::msg::PointCloud2>();
+    Open3dToRos(o3d_pc, default_filtered_pc, transformed_cloud_header);
+    this->default_filtered_pointcloud_publisher_->publish(*default_filtered_pc);
+  }
+
   // run every filter from list of plugins in order
   for (const auto & filter : filters_) {
     o3d_pc = filter->filter(o3d_pc);
@@ -423,7 +433,10 @@ void SFGenerator::pointcloud2_topic_callback(const sensor_msgs::msg::PointCloud2
   
   auto tend = std::chrono::high_resolution_clock::now();
   auto duration = tend - tstart;
-  // RCLCPP_INFO(this->get_logger(), "Cycle time: %f ms", duration.count() * 1e-6);
+  std_msgs::msg::Float64 time_msg;
+  time_msg.data = std::chrono::duration<double, std::milli>(duration).count();
+  process_time_publisher_->publish(time_msg);
+  // RCLCPP_INFO(this->get_logger(), "Cycle time: %f ms", std::chrono::duration<double, std::milli>(duration).count());
   
 }
     

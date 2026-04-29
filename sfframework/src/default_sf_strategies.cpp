@@ -8,11 +8,24 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include <limits>
 #include <chrono>
+#include <list>
+#include <unordered_set>
 #include <std_msgs/msg/float64.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/msg/point_field.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+#include <CGAL/Constrained_Delaunay_triangulation_2.h>
+#include <CGAL/Constrained_triangulation_face_base_2.h>
+#include <CGAL/Constrained_triangulation_plus_2.h>
+#include <CGAL/Triangulation_data_structure_2.h>
+#include <CGAL/Polyline_simplification_2/Vertex_base_2.h>
+#include <CGAL/Polyline_simplification_2/simplify.h>
+#include <CGAL/Polyline_simplification_2/Squared_distance_cost.h>
+#include <CGAL/Polyline_simplification_2/Stop_above_cost_threshold.h>
 
 #if __has_include("tf2_sensor_msgs/tf2_sensor_msgs.hpp")
   #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
@@ -101,16 +114,17 @@ namespace sfframework
     rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr polygon_publisher_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr process_time_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_publisher_;
-    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_publisher_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_array_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr laserscan_publisher_;
 
     void publishDebugData(
       const std::string& frame_id,
       rclcpp::Time stamp,
-      const std::vector<std::tuple<double, double, Eigen::Vector2d>>& radial_buckets,
+      const std::vector<std::tuple<double, double, Eigen::Vector2d, int>>& radial_buckets,
       int circle_subdivisions,
       double angle_resolution,
-      double max_distance)
+      double max_distance,
+      const std::vector<int>& publish_metadata_filter = {})
     {
       geometry_msgs::msg::PolygonStamped polygon_msg;
       polygon_msg.header.frame_id = frame_id;
@@ -125,26 +139,130 @@ namespace sfframework
       }
       polygon_publisher_->publish(polygon_msg);
 
+      std::vector<std::tuple<double, double, Eigen::Vector2d, int>> pointcloud_buckets;
+      const auto* pointcloud_buckets_to_publish = &radial_buckets;
+      if (!publish_metadata_filter.empty()) {
+        std::unordered_set<int> allowed_metadata(
+          publish_metadata_filter.begin(),
+          publish_metadata_filter.end());
+
+        pointcloud_buckets.reserve(radial_buckets.size());
+        for (const auto& bucket : radial_buckets) {
+          if (allowed_metadata.find(std::get<3>(bucket)) != allowed_metadata.end()) {
+            pointcloud_buckets.push_back(bucket);
+          }
+        }
+
+        pointcloud_buckets_to_publish = &pointcloud_buckets;
+      }
+
       sensor_msgs::msg::PointCloud2 pc_msg;
       pc_msg.header.frame_id = frame_id;
       pc_msg.header.stamp = stamp;
 
       sensor_msgs::PointCloud2Modifier modifier(pc_msg);
-      modifier.setPointCloud2FieldsByString(1, "xyz");
-      modifier.resize(radial_buckets.size());
+      modifier.setPointCloud2Fields(
+        4,
+        "x", 1, sensor_msgs::msg::PointField::FLOAT32,
+        "y", 1, sensor_msgs::msg::PointField::FLOAT32,
+        "z", 1, sensor_msgs::msg::PointField::FLOAT32,
+        "intensity", 1, sensor_msgs::msg::PointField::FLOAT32);
+      modifier.resize(pointcloud_buckets_to_publish->size());
 
       sensor_msgs::PointCloud2Iterator<float> iter_x(pc_msg, "x");
       sensor_msgs::PointCloud2Iterator<float> iter_y(pc_msg, "y");
       sensor_msgs::PointCloud2Iterator<float> iter_z(pc_msg, "z");
+      sensor_msgs::PointCloud2Iterator<float> iter_intensity(pc_msg, "intensity");
 
-      for (long unsigned int i = 0; i < radial_buckets.size(); ++i) {
-        auto& p = std::get<2>(radial_buckets[i]);
+      for (long unsigned int i = 0; i < pointcloud_buckets_to_publish->size(); ++i) {
+        auto& p = std::get<2>((*pointcloud_buckets_to_publish)[i]);
         *iter_x = static_cast<float>(p(0));
         *iter_y = static_cast<float>(p(1));
         *iter_z = 0.0f;
-        ++iter_x; ++iter_y; ++iter_z;
+        *iter_intensity = static_cast<float>(std::get<3>((*pointcloud_buckets_to_publish)[i]));
+        ++iter_x; ++iter_y; ++iter_z; ++iter_intensity;
       }
       pointcloud_publisher_->publish(pc_msg);
+
+      visualization_msgs::msg::MarkerArray polyline_markers;
+      visualization_msgs::msg::Marker delete_all;
+      delete_all.header.frame_id = frame_id;
+      delete_all.header.stamp = stamp;
+      delete_all.ns = "debug_polylines";
+      delete_all.id = 0;
+      delete_all.action = visualization_msgs::msg::Marker::DELETEALL;
+      polyline_markers.markers.push_back(delete_all);
+
+      auto is_distance_limit_metadata = [](int metadata) {
+        return metadata == 1 || metadata == -2;
+      };
+
+      std::vector<geometry_msgs::msg::Point> current_polyline;
+      int marker_id = 1;
+
+      auto flush_polyline = [&]() {
+        if (current_polyline.size() < 2) {
+          current_polyline.clear();
+          return;
+        }
+
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = frame_id;
+        marker.header.stamp = stamp;
+        marker.ns = "debug_polylines";
+        marker.id = marker_id++;
+        marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.pose.orientation.w = 1.0;
+        marker.scale.x = 0.03;
+        marker.color.r = 0.05f;
+        marker.color.g = 0.8f;
+        marker.color.b = 0.2f;
+        marker.color.a = 1.0f;
+        marker.points = current_polyline;
+        polyline_markers.markers.push_back(marker);
+        current_polyline.clear();
+      };
+
+      const std::size_t num_radial_buckets = radial_buckets.size();
+      if (num_radial_buckets > 0) {
+        std::size_t start_index = 0;
+        bool found_distance_limit = false;
+        for (std::size_t i = 0; i < num_radial_buckets; ++i) {
+          if (is_distance_limit_metadata(std::get<3>(radial_buckets[i]))) {
+            start_index = (i + 1) % num_radial_buckets;
+            found_distance_limit = true;
+            break;
+          }
+        }
+
+        if (!found_distance_limit) {
+          start_index = 0;
+        }
+
+        for (std::size_t offset = 0; offset < num_radial_buckets; ++offset) {
+          const std::size_t idx = (start_index + offset) % num_radial_buckets;
+          const auto& bucket = radial_buckets[idx];
+          const int metadata = std::get<3>(bucket);
+
+          if (is_distance_limit_metadata(metadata)) {
+            flush_polyline();
+            continue;
+          }
+
+          if (metadata == 0) {
+            geometry_msgs::msg::Point p;
+            p.x = std::get<2>(bucket)(0);
+            p.y = std::get<2>(bucket)(1);
+            p.z = 0.0;
+            current_polyline.push_back(p);
+          }
+        }
+
+        flush_polyline();
+      }
+
+      marker_array_publisher_->publish(polyline_markers);
 
       // Publish LaserScan message
       sensor_msgs::msg::LaserScan scan_msg;
@@ -254,13 +372,17 @@ namespace sfframework
       node_->declare_parameter(name_ + ".circle_subdivisions", 360);
       node_->declare_parameter(name_ + ".robot_radius", 0.5);
       node_->declare_parameter(name_ + ".max_distance", 5.0);
+      // Squared geometric error threshold used by CGAL simplification stop criterion.
+      node_->declare_parameter(name_ + ".simplification_squared_error_threshold", 0.0025);
+      // If empty, all metadata values are published in debug outputs.
+      node_->declare_parameter(name_ + ".debug_publish_metadata_filter", std::vector<int64_t>());
 
       grid_map.add(node_->get_parameter(name_ + ".output_layer").as_string(), 0.0);
     
       polygon_publisher_ = node_->create_publisher<geometry_msgs::msg::PolygonStamped>("~/debug_polygon", 10);
       process_time_publisher_ = node_->create_publisher<std_msgs::msg::Float64>("~/" + name_ + "/process_time", 10);
       pointcloud_publisher_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("~/debug_pointcloud", 10);
-      marker_publisher_ = node_->create_publisher<visualization_msgs::msg::Marker>("~/debug_marker", 10);
+      marker_array_publisher_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("~/debug_polylines", 10);
       laserscan_publisher_ = node_->create_publisher<sensor_msgs::msg::LaserScan>("~/debug_laserscan", 10);
     }
     void onProcess(PartitioningContext &context, grid_map::GridMap &grid_map) override
@@ -273,6 +395,15 @@ namespace sfframework
       auto circle_subdivisions = this->node_->get_parameter(name_ + ".circle_subdivisions").as_int();
       auto robot_radius = this->node_->get_parameter(name_ + ".robot_radius").as_double();
       auto max_distance_from_seer = this->node_->get_parameter(name_ + ".max_distance").as_double();
+      auto simplification_squared_error_threshold =
+        this->node_->get_parameter(name_ + ".simplification_squared_error_threshold").as_double();
+      const auto publish_metadata_filter_param =
+        this->node_->get_parameter(name_ + ".debug_publish_metadata_filter").as_integer_array();
+      std::vector<int> publish_metadata_filter;
+      publish_metadata_filter.reserve(publish_metadata_filter_param.size());
+      for (const auto metadata : publish_metadata_filter_param) {
+        publish_metadata_filter.push_back(static_cast<int>(metadata));
+      }
       
       grid_map[output_layer].setConstant(std::numeric_limits<float>::quiet_NaN());
 
@@ -308,16 +439,18 @@ namespace sfframework
       double angle_resolution = 2 * M_PI / circle_subdivisions;
 
       // maintain a discrete set of rays originating from the sensor, keeping the closest point per ray
-      std::vector<std::tuple<double, double, Eigen::Vector2d>> radial_buckets(circle_subdivisions);
+      std::vector<std::tuple<double, double, Eigen::Vector2d, int>> radial_buckets(circle_subdivisions);
 
+      // fill the buckets with the preliminary values (circle)
       for(int i = 0; i < circle_subdivisions; i++){
         double angle = angle_resolution * i;
         std::get<0>(radial_buckets[i]) = angle;
         std::get<1>(radial_buckets[i]) = max_distance_from_seer_sqrd;
         std::get<2>(radial_buckets[i]) = Eigen::Vector2d(std::cos(angle) * max_distance_from_seer, std::sin(angle) * max_distance_from_seer);
+        std::get<3>(radial_buckets[i]) = -2;
       }
 
-      for(auto pt : point_polar_data){ // Remove 'const &' to allow modification
+      for(auto pt : point_polar_data){
         double p_angle = std::get<0>(pt);
         if (p_angle < 0.0) {
           p_angle += 2.0 * M_PI;
@@ -333,12 +466,18 @@ namespace sfframework
         double bucket_distance_sq = std::get<1>(radial_buckets[bucket_idx]); 
       
         if(p_distance_sq < bucket_distance_sq){
-          radial_buckets[bucket_idx] = pt; // Now pt has the corrected 0 to 2pi angle
+          radial_buckets[bucket_idx] = std::make_tuple(
+            p_angle,
+            std::get<1>(pt),
+            std::get<2>(pt),
+            0
+          );
+          // unmark for removal this idx
+          std::get<3>(radial_buckets[bucket_idx]) = 0;
         }
       }
 
       // BPA inspired hole filling
-      std::vector<int> removed_points_idx;
       for(int i = 0; i < circle_subdivisions; i++){
         const auto& point1 = radial_buckets[i];
         double p1_distance_sq = std::get<1>(point1);
@@ -418,7 +557,7 @@ namespace sfframework
           // filter out the occluded points contained within the filled gap
           for (int step = 1; step < j; step++) {
             int target_idx_k = (i + step) % circle_subdivisions;
-            removed_points_idx.push_back(target_idx_k);
+            std::get<3>(radial_buckets[target_idx_k]) = -1;
           }
 
           // skip ahead over the newly filled virtual points to prevent recursive shadow casting
@@ -428,15 +567,108 @@ namespace sfframework
 
       }
 
-      std::sort(removed_points_idx.begin(), removed_points_idx.end());
-      removed_points_idx.erase(std::unique(removed_points_idx.begin(), removed_points_idx.end()), removed_points_idx.end());
-      for(int i = removed_points_idx.size() - 1; i >= 0; i--){
-        radial_buckets.erase(radial_buckets.begin() + removed_points_idx[i]);
+      for (int i = static_cast<int>(radial_buckets.size()) - 1; i >= 0; --i) {
+        if (std::get<3>(radial_buckets[i]) == -1) {
+          radial_buckets.erase(radial_buckets.begin() + i);
+        }
+      }
+
+      // Example: simplify only obstacle points (metadata == 0) using CGAL.
+      // Instead of removing simplified-out vertices from the vector, we mark
+      // them with negative metadata so downstream logic can ignore them.
+      if (radial_buckets.size() > 3) {
+        // CGAL kernel used by the triangulation/simplification pipeline.
+        using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
+        using Vb = CGAL::Polyline_simplification_2::Vertex_base_2<Kernel>;
+        using Fb = CGAL::Constrained_triangulation_face_base_2<Kernel>;
+        using TDS = CGAL::Triangulation_data_structure_2<Vb, Fb>;
+        // Constrained Delaunay triangulation is the geometric support used internally
+        // by Polyline_simplification_2 to evaluate removable vertices.
+        using CDT = CGAL::Constrained_Delaunay_triangulation_2<Kernel, TDS, CGAL::Exact_predicates_tag>;
+        using CT = CGAL::Constrained_triangulation_plus_2<CDT>;
+        namespace PS = CGAL::Polyline_simplification_2;
+
+        constexpr int kSimplifiedOutMetadata = -3;
+
+        auto mark_simplified_out_obstacle_run = [&](std::size_t begin_idx, std::size_t end_idx) {
+          const std::size_t run_size = end_idx - begin_idx;
+          if (run_size < 3) {
+            return;
+          }
+
+          std::list<Kernel::Point_2> polyline;
+          for (std::size_t k = begin_idx; k < end_idx; ++k) {
+            const auto& point = std::get<2>(radial_buckets[k]);
+            polyline.emplace_back(point.x(), point.y());
+          }
+
+          CT cgal_constraints;
+          const bool is_closed_run = (begin_idx == 0 && end_idx == radial_buckets.size());
+          const auto constraint_id = cgal_constraints.insert_constraint(polyline.begin(), polyline.end(), is_closed_run);
+
+          const auto removed_vertices = PS::simplify(
+            cgal_constraints,
+            PS::Squared_distance_cost(),
+            PS::Stop_above_cost_threshold(simplification_squared_error_threshold));
+          (void)removed_vertices;
+
+          std::vector<Eigen::Vector2d> simplified_points;
+          simplified_points.reserve(run_size);
+
+          for (auto it = cgal_constraints.vertices_in_constraint_begin(constraint_id);
+               it != cgal_constraints.vertices_in_constraint_end(constraint_id);
+               ++it) {
+            const auto& cgal_point = (*it)->point();
+            Eigen::Vector2d point(static_cast<double>(cgal_point.x()), static_cast<double>(cgal_point.y()));
+            simplified_points.push_back(point);
+          }
+
+          if (is_closed_run && simplified_points.size() > 1) {
+            const auto& first_point = simplified_points.front();
+            const auto& last_point = simplified_points.back();
+            if ((first_point - last_point).squaredNorm() < epsilon) {
+              simplified_points.pop_back();
+            }
+          }
+
+          if (simplified_points.empty()) {
+            return;
+          }
+
+          for (std::size_t k = begin_idx; k < end_idx; ++k) {
+            const auto& original_point = std::get<2>(radial_buckets[k]);
+            bool kept_by_simplification = false;
+            for (const auto& simplified_point : simplified_points) {
+              if ((simplified_point - original_point).squaredNorm() < epsilon) {
+                kept_by_simplification = true;
+                break;
+              }
+            }
+
+            if (!kept_by_simplification) {
+              std::get<3>(radial_buckets[k]) = kSimplifiedOutMetadata;
+            }
+          }
+        };
+
+        std::size_t idx = 0;
+        while (idx < radial_buckets.size()) {
+          if (std::get<3>(radial_buckets[idx]) != 0) {
+            ++idx;
+            continue;
+          }
+
+          std::size_t run_begin = idx;
+          while (idx < radial_buckets.size() && std::get<3>(radial_buckets[idx]) == 0) {
+            ++idx;
+          }
+          mark_simplified_out_obstacle_run(run_begin, idx);
+        }
       }
 
       publishDebugData(grid_map.getFrameId(), rclcpp::Time(context.header.stamp), 
                        radial_buckets, circle_subdivisions, angle_resolution, 
-                       max_distance_from_seer);
+                       max_distance_from_seer, publish_metadata_filter);
 
       auto tend = std::chrono::high_resolution_clock::now();
       auto duration = tend - tstart;

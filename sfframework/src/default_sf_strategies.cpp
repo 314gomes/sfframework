@@ -5,9 +5,11 @@
 #include <omp.h>
 #include "sensor_msgs/msg/imu.hpp"
 #include <Eigen/Geometry>
+#include <Eigen/Eigenvalues>
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include <limits>
 #include <chrono>
+#include <algorithm>
 #include <list>
 #include <unordered_set>
 #include <std_msgs/msg/float64.hpp>
@@ -36,6 +38,30 @@
 namespace sfframework
 {
   double epsilon = 1e-6;
+
+  struct RadialSlicePoint
+  {
+    double angle = 0.0;
+    double distance_sq = 0.0;
+    Eigen::Vector3d point = Eigen::Vector3d::Zero();
+    int metadata = 0;
+    int dbscan_label = -1;
+  };
+
+  struct RadialBucketPoint
+  {
+    double angle = 0.0;
+    double distance_sq = 0.0;
+    Eigen::Vector2d point = Eigen::Vector2d::Zero();
+    int metadata = 0;
+    int dbscan_label = -1;
+    // Selected cluster for this slice: label of the cluster whose centroid
+    // is closest to the sensor origin (in XY). -1 if none.
+    int selected_dbscan_label = -1;
+    // Centroid of the selected cluster (3D) and full 3x3 covariance.
+    Eigen::Vector3d selected_dbscan_centroid = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d selected_dbscan_covariance = Eigen::Matrix3d::Zero();
+  };
 
   class GaussianRepulsion : public SFStrategy
   {
@@ -114,13 +140,15 @@ namespace sfframework
     rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr polygon_publisher_;
     rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr process_time_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_publisher_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_multiarray_publisher_;
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr distances_multiarray_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_array_publisher_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr laserscan_publisher_;
 
     void publishDebugData(
       const std::string& frame_id,
       rclcpp::Time stamp,
-      const std::vector<std::tuple<double, double, Eigen::Vector2d, int>>& radial_buckets,
+      const std::vector<RadialBucketPoint>& radial_buckets,
       int circle_subdivisions,
       double angle_resolution,
       double max_distance,
@@ -132,14 +160,14 @@ namespace sfframework
       
       for (const auto& bucket : radial_buckets) {
         geometry_msgs::msg::Point32 vertex;
-        vertex.x = std::get<2>(bucket)(0);
-        vertex.y = std::get<2>(bucket)(1);
+        vertex.x = bucket.point(0);
+        vertex.y = bucket.point(1);
         vertex.z = 0.0;
         polygon_msg.polygon.points.push_back(vertex);
       }
       polygon_publisher_->publish(polygon_msg);
 
-      std::vector<std::tuple<double, double, Eigen::Vector2d, int>> pointcloud_buckets;
+      std::vector<RadialBucketPoint> pointcloud_buckets;
       const auto* pointcloud_buckets_to_publish = &radial_buckets;
       if (!publish_metadata_filter.empty()) {
         std::unordered_set<int> allowed_metadata(
@@ -148,7 +176,7 @@ namespace sfframework
 
         pointcloud_buckets.reserve(radial_buckets.size());
         for (const auto& bucket : radial_buckets) {
-          if (allowed_metadata.find(std::get<3>(bucket)) != allowed_metadata.end()) {
+          if (allowed_metadata.find(bucket.metadata) != allowed_metadata.end()) {
             pointcloud_buckets.push_back(bucket);
           }
         }
@@ -166,20 +194,20 @@ namespace sfframework
         "x", 1, sensor_msgs::msg::PointField::FLOAT32,
         "y", 1, sensor_msgs::msg::PointField::FLOAT32,
         "z", 1, sensor_msgs::msg::PointField::FLOAT32,
-        "intensity", 1, sensor_msgs::msg::PointField::FLOAT32);
+        "intensity", 1, sensor_msgs::msg::PointField::INT32);
       modifier.resize(pointcloud_buckets_to_publish->size());
 
       sensor_msgs::PointCloud2Iterator<float> iter_x(pc_msg, "x");
       sensor_msgs::PointCloud2Iterator<float> iter_y(pc_msg, "y");
       sensor_msgs::PointCloud2Iterator<float> iter_z(pc_msg, "z");
-      sensor_msgs::PointCloud2Iterator<float> iter_intensity(pc_msg, "intensity");
+      sensor_msgs::PointCloud2Iterator<int32_t> iter_intensity(pc_msg, "intensity");
 
       for (long unsigned int i = 0; i < pointcloud_buckets_to_publish->size(); ++i) {
-        auto& p = std::get<2>((*pointcloud_buckets_to_publish)[i]);
+        auto& p = (*pointcloud_buckets_to_publish)[i].point;
         *iter_x = static_cast<float>(p(0));
         *iter_y = static_cast<float>(p(1));
         *iter_z = 0.0f;
-        *iter_intensity = static_cast<float>(std::get<3>((*pointcloud_buckets_to_publish)[i]));
+        *iter_intensity = static_cast<int32_t>((*pointcloud_buckets_to_publish)[i].metadata);
         ++iter_x; ++iter_y; ++iter_z; ++iter_intensity;
       }
       pointcloud_publisher_->publish(pc_msg);
@@ -214,7 +242,7 @@ namespace sfframework
         marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
         marker.action = visualization_msgs::msg::Marker::ADD;
         marker.pose.orientation.w = 1.0;
-        marker.scale.x = 0.03;
+        marker.scale.x = 0.01;
         marker.color.r = 0.05f;
         marker.color.g = 0.8f;
         marker.color.b = 0.2f;
@@ -229,7 +257,7 @@ namespace sfframework
         std::size_t start_index = 0;
         bool found_distance_limit = false;
         for (std::size_t i = 0; i < num_radial_buckets; ++i) {
-          if (is_distance_limit_metadata(std::get<3>(radial_buckets[i]))) {
+          if (is_distance_limit_metadata(radial_buckets[i].metadata)) {
             start_index = (i + 1) % num_radial_buckets;
             found_distance_limit = true;
             break;
@@ -243,7 +271,7 @@ namespace sfframework
         for (std::size_t offset = 0; offset < num_radial_buckets; ++offset) {
           const std::size_t idx = (start_index + offset) % num_radial_buckets;
           const auto& bucket = radial_buckets[idx];
-          const int metadata = std::get<3>(bucket);
+          const int metadata = bucket.metadata;
 
           if (is_distance_limit_metadata(metadata)) {
             flush_polyline();
@@ -252,8 +280,8 @@ namespace sfframework
 
           if (metadata == 0) {
             geometry_msgs::msg::Point p;
-            p.x = std::get<2>(bucket)(0);
-            p.y = std::get<2>(bucket)(1);
+            p.x = bucket.point(0);
+            p.y = bucket.point(1);
             p.z = 0.0;
             current_polyline.push_back(p);
           }
@@ -295,8 +323,8 @@ namespace sfframework
         auto radial1 = radial_buckets[point1_idx];
         auto radial2 = radial_buckets[point2_idx];
         
-        double angle1 = std::get<0>(radial1);
-        double angle2 = std::get<0>(radial2);
+        double angle1 = radial1.angle;
+        double angle2 = radial2.angle;
 
         // Handle wrap-around at the 2*PI boundary
         if(angle2 < angle1){
@@ -312,8 +340,8 @@ namespace sfframework
 
         // RCLCPP_INFO(node_->get_logger(), "point_idx: %d, i: %d, i_angle: %f, angle1: %f, angle2: %f", point_idx, i, i_angle, angle1, angle2);
 
-        double p1_dist_sq = std::get<1>(radial1);
-        double p2_dist_sq = std::get<1>(radial2);
+        double p1_dist_sq = radial1.distance_sq;
+        double p2_dist_sq = radial2.distance_sq;
 
         // check if both of the points is too close to max_distance threshold (squared!)
         double max_dist_sq = max_distance * max_distance;
@@ -323,7 +351,7 @@ namespace sfframework
         }
 
         // Using closest point distance (without interpolation for now)
-        // scan_msg.ranges[i] = std::get<2>(radial1).norm();
+        // scan_msg.ranges[i] = radial1.point.norm();
         // scan_msg.intensities[i] = point1_idx;
 
         // determine where in the line segment from p1 to p2 
@@ -332,8 +360,8 @@ namespace sfframework
         auto u = Eigen::Vector2d(cos(i_angle), sin(i_angle));
         
         // points 1 and 2
-        auto p1 = std::get<2>(radial1);
-        auto p2 = std::get<2>(radial2);
+        auto p1 = radial1.point;
+        auto p2 = radial2.point;
 
         // line segment direction
         auto d = p2 - p1;
@@ -363,6 +391,38 @@ namespace sfframework
       // std::cin >> x;
     }
 
+    void publishDebugData(
+      const std::string& frame_id,
+      rclcpp::Time stamp,
+      const std::vector<std::tuple<double, double, Eigen::Vector2d, int>>& radial_buckets,
+      int circle_subdivisions,
+      double angle_resolution,
+      double max_distance,
+      const std::vector<int>& publish_metadata_filter = {})
+    {
+      std::vector<RadialBucketPoint> converted_buckets;
+      converted_buckets.reserve(radial_buckets.size());
+
+      for (const auto& bucket : radial_buckets) {
+        RadialBucketPoint converted_bucket;
+        converted_bucket.angle = std::get<0>(bucket);
+        converted_bucket.distance_sq = std::get<1>(bucket);
+        converted_bucket.point = std::get<2>(bucket);
+        converted_bucket.metadata = std::get<3>(bucket);
+        converted_bucket.dbscan_label = -1;
+        converted_buckets.push_back(converted_bucket);
+      }
+
+      publishDebugData(
+        frame_id,
+        stamp,
+        converted_buckets,
+        circle_subdivisions,
+        angle_resolution,
+        max_distance,
+        publish_metadata_filter);
+    }
+
     
     void onInitialize(grid_map::GridMap &grid_map) override
     {
@@ -372,6 +432,8 @@ namespace sfframework
       node_->declare_parameter(name_ + ".circle_subdivisions", 360);
       node_->declare_parameter(name_ + ".robot_radius", 0.5);
       node_->declare_parameter(name_ + ".max_distance", 5.0);
+      node_->declare_parameter(name_ + ".slice_dbscan_eps", 0.5);
+      node_->declare_parameter(name_ + ".slice_dbscan_min_points", 10);
       // Squared geometric error threshold used by CGAL simplification stop criterion.
       node_->declare_parameter(name_ + ".simplification_squared_error_threshold", 0.0025);
       // If empty, all metadata values are published in debug outputs.
@@ -384,6 +446,8 @@ namespace sfframework
       pointcloud_publisher_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("~/debug_pointcloud", 10);
       marker_array_publisher_ = node_->create_publisher<visualization_msgs::msg::MarkerArray>("~/debug_polylines", 10);
       laserscan_publisher_ = node_->create_publisher<sensor_msgs::msg::LaserScan>("~/debug_laserscan", 10);
+      pointcloud_multiarray_publisher_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>("~/debug_pointcloud_multiarray", 10);
+      distances_multiarray_publisher_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>("~/debug_distances_multiarray", 10);
     }
     void onProcess(PartitioningContext &context, grid_map::GridMap &grid_map) override
     {
@@ -395,6 +459,8 @@ namespace sfframework
       auto circle_subdivisions = this->node_->get_parameter(name_ + ".circle_subdivisions").as_int();
       auto robot_radius = this->node_->get_parameter(name_ + ".robot_radius").as_double();
       auto max_distance_from_seer = this->node_->get_parameter(name_ + ".max_distance").as_double();
+      auto slice_dbscan_eps = this->node_->get_parameter(name_ + ".slice_dbscan_eps").as_double();
+      auto slice_dbscan_min_points = this->node_->get_parameter(name_ + ".slice_dbscan_min_points").as_int();
       auto simplification_squared_error_threshold =
         this->node_->get_parameter(name_ + ".simplification_squared_error_threshold").as_double();
       const auto publish_metadata_filter_param =
@@ -422,7 +488,7 @@ namespace sfframework
         return;
       }
 
-      std::vector<std::tuple<double, double, Eigen::Vector2d>> point_polar_data;
+      std::vector<RadialSlicePoint> point_polar_data;
       point_polar_data.reserve(o3d_pc->points_.size());
       for (const auto& pt : o3d_pc->points_) {
         double distance_sq = pt.head<2>().squaredNorm();
@@ -431,56 +497,384 @@ namespace sfframework
           continue;
         }
         double angle = std::atan2(pt(1), pt(0));
-        point_polar_data.emplace_back(angle, distance_sq, pt.head<2>());
+        point_polar_data.push_back({angle, distance_sq, pt});
       }
 
       double max_distance_from_seer_sqrd = max_distance_from_seer * max_distance_from_seer;
 
       double angle_resolution = 2 * M_PI / circle_subdivisions;
 
-      // maintain a discrete set of rays originating from the sensor, keeping the closest point per ray
-      std::vector<std::tuple<double, double, Eigen::Vector2d, int>> radial_buckets(circle_subdivisions);
+      // maintain a discrete set of rays originating from the sensor, keeping ALL points per ray
+      // Stores full 3D points
+      std::vector<std::vector<RadialSlicePoint>> radial_buckets_multiarray(circle_subdivisions);
 
-      // fill the buckets with the preliminary values (circle)
-      for(int i = 0; i < circle_subdivisions; i++){
-        double angle = angle_resolution * i;
-        std::get<0>(radial_buckets[i]) = angle;
-        std::get<1>(radial_buckets[i]) = max_distance_from_seer_sqrd;
-        std::get<2>(radial_buckets[i]) = Eigen::Vector2d(std::cos(angle) * max_distance_from_seer, std::sin(angle) * max_distance_from_seer);
-        std::get<3>(radial_buckets[i]) = -2;
-      }
-
-      for(auto pt : point_polar_data){
-        double p_angle = std::get<0>(pt);
+      // collect all points, preserving all points per ray
+      for (auto pt : point_polar_data) {
+        double p_angle = pt.angle;
         if (p_angle < 0.0) {
           p_angle += 2.0 * M_PI;
-          std::get<0>(pt) = p_angle;
+          pt.angle = p_angle;
         }
-        double p_distance_sq = std::get<1>(pt);
+        double p_distance_sq = pt.distance_sq;
         
         int bucket_idx = static_cast<int>(p_angle / angle_resolution);
         if (bucket_idx >= circle_subdivisions) {
           bucket_idx = circle_subdivisions - 1;
         }
 
-        double bucket_distance_sq = std::get<1>(radial_buckets[bucket_idx]); 
-      
-        if(p_distance_sq < bucket_distance_sq){
-          radial_buckets[bucket_idx] = std::make_tuple(
-            p_angle,
-            std::get<1>(pt),
-            std::get<2>(pt),
-            0
-          );
-          // unmark for removal this idx
-          std::get<3>(radial_buckets[bucket_idx]) = 0;
+        // Add ALL points to the corresponding ray bucket (storing full 3D point)
+        radial_buckets_multiarray[bucket_idx].push_back(pt);
+      }
+
+      // Run DBSCAN independently on each angular slice so segmentation stays local
+      // to the slice and does not affect the existing geometric pipeline.
+      for (auto& bucket : radial_buckets_multiarray) {
+        if (bucket.empty()) {
+          continue;
+        }
+
+        open3d::geometry::PointCloud bucket_cloud;
+        bucket_cloud.points_.reserve(bucket.size());
+        for (const auto& point : bucket) {
+          bucket_cloud.points_.push_back(point.point);
+        }
+
+        const auto labels = bucket_cloud.ClusterDBSCAN(
+          slice_dbscan_eps,
+          slice_dbscan_min_points,
+          false);
+
+        for (std::size_t i = 0; i < bucket.size() && i < labels.size(); ++i) {
+          bucket[i].dbscan_label = labels[i];
         }
       }
+
+      // For each angular slice (bucket) compute per-cluster centroids and
+      // select the cluster whose centroid (XY) is closest to the sensor origin (0,0).
+      std::vector<int> selected_label_per_bucket(circle_subdivisions, -1);
+      std::vector<Eigen::Vector3d> selected_centroid_per_bucket(circle_subdivisions, Eigen::Vector3d::Zero());
+      std::vector<Eigen::Matrix3d> selected_covariance_per_bucket(circle_subdivisions, Eigen::Matrix3d::Zero());
+
+      for (int bucket_idx = 0; bucket_idx < circle_subdivisions; ++bucket_idx) {
+        const auto &bucket = radial_buckets_multiarray[bucket_idx];
+        if (bucket.empty()) continue;
+
+        // Group points per DBSCAN label using Open3D point clouds
+        std::unordered_map<int, open3d::geometry::PointCloud> label_clouds;
+        for (const auto &tup : bucket) {
+          int lab = tup.dbscan_label;
+          if (lab < 0) continue;
+          label_clouds[lab].points_.push_back(tup.point);
+        }
+
+        // Choose the label whose centroid (projected to XY) is closest to origin
+        double best_dist = std::numeric_limits<double>::infinity();
+        int best_label = -1;
+        Eigen::Vector3d best_centroid3 = Eigen::Vector3d::Zero();
+        Eigen::Matrix3d best_cov = Eigen::Matrix3d::Zero();
+
+        for (auto &kv : label_clouds) {
+          int lab = kv.first;
+          auto &cloud = kv.second;
+          if (cloud.points_.empty()) continue;
+
+          // Compute centroid using Open3D helper if available
+          Eigen::Vector3d centroid3 = Eigen::Vector3d::Zero();
+          // prefer Open3D method when present
+          centroid3 = cloud.GetCenter();
+
+          double d = centroid3.head<2>().squaredNorm();
+          if (d < best_dist) {
+            best_dist = d;
+            best_label = lab;
+            best_centroid3 = centroid3;
+
+            // compute full 3x3 covariance (population covariance)
+            Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+            const double n = static_cast<double>(cloud.points_.size());
+            if (n > 0) {
+              for (const auto &p : cloud.points_) {
+                Eigen::Vector3d diff = p - centroid3;
+                cov += diff * diff.transpose();
+              }
+              cov /= n;
+            }
+            best_cov = cov;
+          }
+        }
+
+        selected_label_per_bucket[bucket_idx] = best_label;
+        selected_centroid_per_bucket[bucket_idx] = best_centroid3;
+        selected_covariance_per_bucket[bucket_idx] = best_cov;
+      }
+
+      // Fill each ray with a single point
+      std::vector<RadialBucketPoint> radial_buckets(circle_subdivisions);
+
+      for(int i = 0; i < circle_subdivisions; i++){
+        // fill the buckets with the preliminary values (circle)
+        double angle = angle_resolution * i;
+        radial_buckets[i].angle = angle;
+        radial_buckets[i].distance_sq = max_distance_from_seer_sqrd;
+        radial_buckets[i].point = Eigen::Vector2d(
+          std::cos(angle) * max_distance_from_seer,
+          std::sin(angle) * max_distance_from_seer);
+        radial_buckets[i].metadata = -2;
+        radial_buckets[i].dbscan_label = -1;
+        radial_buckets[i].selected_dbscan_label = -1;
+        radial_buckets[i].selected_dbscan_centroid = Eigen::Vector3d::Zero();
+        radial_buckets[i].selected_dbscan_covariance = Eigen::Matrix3d::Zero();
+
+        // Find the closest point in this ray and project to 2D
+        if (!radial_buckets_multiarray[i].empty()) {
+          // auto closest_it = std::min_element(
+          //   radial_buckets_multiarray[i].begin(),
+          //   radial_buckets_multiarray[i].end(),
+          //   [](const auto& a, const auto& b) { return a.distance_sq < b.distance_sq; }
+          // );
+
+          // Project 3D point to 2D for radial_buckets
+          // radial_buckets[i].angle = closest_it->angle;
+          // radial_buckets[i].distance_sq = closest_it->distance_sq;
+          // radial_buckets[i].point = closest_it->point.head<2>();
+          // radial_buckets[i].metadata = closest_it->metadata;
+
+          // Use the per-slice selected cluster label (closest centroid) instead
+          // of the individual point label. The selected_label_per_bucket and
+          // selected_centroid_per_bucket vectors were computed earlier.
+          radial_buckets[i].dbscan_label = selected_label_per_bucket[i];
+          radial_buckets[i].selected_dbscan_label = selected_label_per_bucket[i];
+          radial_buckets[i].selected_dbscan_centroid = selected_centroid_per_bucket[i];
+
+          // Keep the bucket angle tied to the ray index and only accept a
+          // selected centroid when DBSCAN produced a valid per-slice label.
+          if (radial_buckets[i].selected_dbscan_label >= 0) {
+            radial_buckets[i].point = radial_buckets[i].selected_dbscan_centroid.head<2>();
+            radial_buckets[i].distance_sq = radial_buckets[i].point.squaredNorm();
+            radial_buckets[i].metadata = 0;
+            radial_buckets[i].selected_dbscan_covariance = selected_covariance_per_bucket[i];
+          }
+
+        }
+      }
+
+      // Publish the full multiarray as a PointCloud2 where the intensity encodes the ray (section) index
+      {
+        // Count total points
+        size_t total_points = 0;
+        for (int i = 0; i < circle_subdivisions; ++i) total_points += radial_buckets_multiarray[i].size();
+
+        if (total_points > 0 && pointcloud_multiarray_publisher_) {
+          sensor_msgs::msg::PointCloud2 pc_msg;
+          pc_msg.header.frame_id = grid_map.getFrameId();
+          pc_msg.header.stamp = rclcpp::Time(context.header.stamp);
+
+          sensor_msgs::PointCloud2Modifier modifier(pc_msg);
+          modifier.setPointCloud2Fields(
+            4,
+            "x", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "y", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "z", 1, sensor_msgs::msg::PointField::FLOAT32,
+            "index", 1, sensor_msgs::msg::PointField::INT16);
+          modifier.resize(total_points);
+
+          sensor_msgs::PointCloud2Iterator<float> iter_x(pc_msg, "x");
+          sensor_msgs::PointCloud2Iterator<float> iter_y(pc_msg, "y");
+          sensor_msgs::PointCloud2Iterator<float> iter_z(pc_msg, "z");
+          sensor_msgs::PointCloud2Iterator<uint16_t> iter_intensity(pc_msg, "index");
+
+          for (int bucket_idx = 0; bucket_idx < circle_subdivisions; ++bucket_idx) {
+            for (const auto& tup : radial_buckets_multiarray[bucket_idx]) {
+              const auto& p = tup.point;
+              *iter_x = static_cast<float>(p(0));
+              *iter_y = static_cast<float>(p(1));
+              *iter_z = static_cast<float>(p(2));
+
+              int sel_label = selected_label_per_bucket[bucket_idx];
+              
+              *iter_intensity = (static_cast<uint8_t>(bucket_idx) % 2) << 1;
+              (*iter_intensity) += tup.dbscan_label == sel_label;
+
+              ++iter_x; ++iter_y; ++iter_z; ++iter_intensity;
+            }
+          }
+
+          pointcloud_multiarray_publisher_->publish(pc_msg);
+        }
+      }
+
+      // Publish covariance as ellipsoids and vectors
+      {
+        if (marker_array_publisher_) {
+          visualization_msgs::msg::MarkerArray cov_markers;
+          visualization_msgs::msg::Marker delete_all_cov;
+          delete_all_cov.header.frame_id = grid_map.getFrameId();
+          delete_all_cov.header.stamp = rclcpp::Time(context.header.stamp);
+          delete_all_cov.ns = "covariance_ellipsoids";
+          delete_all_cov.id = 0;
+          delete_all_cov.action = visualization_msgs::msg::Marker::DELETEALL;
+          cov_markers.markers.push_back(delete_all_cov);
+
+          // Also clear previously published axes markers in a separate namespace
+          visualization_msgs::msg::Marker delete_all_axes;
+          delete_all_axes.header.frame_id = grid_map.getFrameId();
+          delete_all_axes.header.stamp = rclcpp::Time(context.header.stamp);
+          delete_all_axes.ns = "covariance_axes";
+          delete_all_axes.id = 0;
+          delete_all_axes.action = visualization_msgs::msg::Marker::DELETEALL;
+          cov_markers.markers.push_back(delete_all_axes);
+
+          int marker_id = 1;
+          for (const auto &rb : radial_buckets) {
+            if (rb.selected_dbscan_label < 0) continue;
+
+            const Eigen::Matrix3d &cov = rb.selected_dbscan_covariance;
+            // quick NaN check
+            double trace = cov.trace();
+            if (!std::isfinite(trace)) continue;
+
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(cov);
+            if (solver.info() != Eigen::Success) continue;
+
+            Eigen::Vector3d evals = solver.eigenvalues();
+            Eigen::Matrix3d evecs = solver.eigenvectors();
+
+            // Clamp negative eigenvalues (numerical noise) to zero
+            for (int k = 0; k < 3; ++k) if (evals[k] < 0.0) evals[k] = 0.0;
+
+            // Convert eigenvalues (variance) to axis lengths. Use 2*sigma as visual scale.
+            Eigen::Vector3d axes = 2.0 * evals.cwiseSqrt();
+            constexpr double kMinAxis = 1e-6;
+            for (int k = 0; k < 3; ++k) if (axes[k] < kMinAxis) axes[k] = kMinAxis;
+
+            visualization_msgs::msg::Marker m;
+            m.header.frame_id = grid_map.getFrameId();
+            m.header.stamp = rclcpp::Time(context.header.stamp);
+            m.ns = "covariance_ellipsoids";
+            m.id = marker_id++;
+            m.type = visualization_msgs::msg::Marker::SPHERE;
+            m.action = visualization_msgs::msg::Marker::ADD;
+
+            // Position
+            m.pose.position.x = rb.selected_dbscan_centroid.x();
+            m.pose.position.y = rb.selected_dbscan_centroid.y();
+            m.pose.position.z = rb.selected_dbscan_centroid.z();
+
+            // Orientation from eigenvectors (rotation matrix)
+            Eigen::Quaterniond q(evecs);
+            m.pose.orientation.x = q.x();
+            m.pose.orientation.y = q.y();
+            m.pose.orientation.z = q.z();
+            m.pose.orientation.w = q.w();
+
+            // Scale is the axis lengths
+            m.scale.x = axes.x();
+            m.scale.y = axes.y();
+            m.scale.z = axes.z();
+
+            // Visual style
+            m.color.r = 0.0f;
+            m.color.g = 1.0f;
+            m.color.b = 0.0f;
+            m.color.a = 0.5f;
+
+            cov_markers.markers.push_back(m);
+
+            // Publish principal axes as arrows in a separate namespace
+            const Eigen::Vector3d center = rb.selected_dbscan_centroid;
+            for (int ax = 0; ax < 3; ++ax) {
+              Eigen::Vector3d dir = evecs.col(ax);
+              double len = axes[ax];
+              if (!std::isfinite(len) || len <= 0.0) continue;
+
+              geometry_msgs::msg::Point p_start;
+              geometry_msgs::msg::Point p_end;
+              p_start.x = center.x();
+              p_start.y = center.y();
+              p_start.z = center.z();
+              Eigen::Vector3d p_end_eig = center + dir.normalized() * (len * 0.5);
+              p_end.x = p_end_eig.x();
+              p_end.y = p_end_eig.y();
+              p_end.z = p_end_eig.z();
+
+              visualization_msgs::msg::Marker arrow;
+              arrow.header.frame_id = grid_map.getFrameId();
+              arrow.header.stamp = rclcpp::Time(context.header.stamp);
+              arrow.ns = "covariance_axes";
+              arrow.id = marker_id++;
+              arrow.type = visualization_msgs::msg::Marker::ARROW;
+              arrow.action = visualization_msgs::msg::Marker::ADD;
+              arrow.points.clear();
+              arrow.points.push_back(p_start);
+              arrow.points.push_back(p_end);
+
+              // Shaft diameter and head size scaled from axis length (with minima)
+              double shaft = std::max(0.01, 0.04 * len);
+              double head_diam = std::max(0.02, shaft * 2.0);
+              double head_len = std::max(0.02, 0.1 * len);
+              arrow.scale.x = static_cast<float>(shaft);
+              arrow.scale.y = static_cast<float>(head_diam);
+              arrow.scale.z = static_cast<float>(head_len);
+
+              // Color axes: principal axes colored R,G,B
+              if (ax == 0) { arrow.color.r = 1.0f; arrow.color.g = 0.0f; arrow.color.b = 0.0f; }
+              else if (ax == 1) { arrow.color.r = 0.0f; arrow.color.g = 1.0f; arrow.color.b = 0.0f; }
+              else { arrow.color.r = 0.0f; arrow.color.g = 0.0f; arrow.color.b = 1.0f; }
+              arrow.color.a = 0.9f;
+
+              cov_markers.markers.push_back(arrow);
+            }
+          }
+
+          if (!cov_markers.markers.empty()) {
+            marker_array_publisher_->publish(cov_markers);
+          }
+        }
+      }
+
+      // Publish distances multiarray: one array per circle subdivision
+      // {
+      //   // Find max points in any subdivision for consistent 2D structure
+      //   size_t max_points_per_subdivision = 0;
+      //   for (int i = 0; i < circle_subdivisions; ++i) {
+      //     max_points_per_subdivision = std::max(max_points_per_subdivision, radial_buckets_multiarray[i].size());
+      //   }
+
+      //   if (max_points_per_subdivision > 0 && distances_multiarray_publisher_) {
+      //     std_msgs::msg::Float64MultiArray distances_msg;
+      //     distances_msg.layout.dim.clear();
+      //     distances_msg.layout.dim.resize(2);
+      //     distances_msg.layout.dim[0].label = "subdivisions";
+      //     distances_msg.layout.dim[0].size = circle_subdivisions;
+      //     distances_msg.layout.dim[0].stride = max_points_per_subdivision;
+      //     distances_msg.layout.dim[1].label = "distances";
+      //     distances_msg.layout.dim[1].size = max_points_per_subdivision;
+      //     distances_msg.layout.dim[1].stride = 1;
+      //     distances_msg.layout.data_offset = 0;
+
+      //     distances_msg.data.clear();
+      //     distances_msg.data.reserve(circle_subdivisions * max_points_per_subdivision);
+
+      //     for (int i = 0; i < circle_subdivisions; ++i) {
+      //       // Flatten distances for this subdivision
+      //       for (size_t j = 0; j < radial_buckets_multiarray[i].size(); ++j) {
+      //         double distance = std::sqrt(radial_buckets_multiarray[i][j].distance_sq);
+      //         distances_msg.data.push_back(distance);
+      //       }
+      //       // Pad with NaN for shorter subdivisions
+      //       for (size_t j = radial_buckets_multiarray[i].size(); j < max_points_per_subdivision; ++j) {
+      //         distances_msg.data.push_back(std::numeric_limits<double>::quiet_NaN());
+      //       }
+      //     }
+
+      //     distances_multiarray_publisher_->publish(distances_msg);
+      //   }
+      // }
 
       // BPA inspired hole filling
       for(int i = 0; i < circle_subdivisions; i++){
         const auto& point1 = radial_buckets[i];
-        double p1_distance_sq = std::get<1>(point1);
+        double p1_distance_sq = point1.distance_sq;
 
         if (p1_distance_sq >= max_distance_from_seer_sqrd - epsilon) {
           continue;
@@ -500,18 +894,18 @@ namespace sfframework
           int target_idx = (i + j) % circle_subdivisions;
           auto point2 = radial_buckets[target_idx];
 
-          if(std::get<1>(point2) >= max_distance_from_seer_sqrd - epsilon){
+          if(point2.distance_sq >= max_distance_from_seer_sqrd - epsilon){
             continue;
           }
 
-          auto diff_vec = (std::get<2>(point2) - std::get<2>(point1));
+          auto diff_vec = (point2.point - point1.point);
           auto dist_between_points = diff_vec.norm();
 
           if(dist_between_points > 2 * robot_radius - epsilon){
             continue;
           }
 
-          auto midpoint = (std::get<2>(point2) + std::get<2>(point1))/2;
+          auto midpoint = (point2.point + point1.point)/2;
           double val = robot_radius * robot_radius - (dist_between_points*dist_between_points/4.0);
           auto height_to_center = std::sqrt(std::max(0.0, val));
           auto perp_vec = Eigen::Vector2d(-diff_vec(1), diff_vec(0)).normalized(); 
@@ -533,16 +927,16 @@ namespace sfframework
             int intermediate_idx = (i + step) % circle_subdivisions;
             auto intermediate_point = radial_buckets[intermediate_idx];
 
-            auto p3_distance_from_seer_sq = std::get<1>(intermediate_point);
+            auto p3_distance_from_seer_sq = intermediate_point.distance_sq;
             
             double t_interpolation = static_cast<double>(step) / j;
-            Eigen::Vector2d interpolated_p = (1 - t_interpolation) * std::get<2>(point1) + t_interpolation * std::get<2>(point2);
+            Eigen::Vector2d interpolated_p = (1 - t_interpolation) * point1.point + t_interpolation * point2.point;
             if (p3_distance_from_seer_sq < interpolated_p.squaredNorm()){
               should_continue = true;
               break;
             }
 
-            auto vec_from_center = (std::get<2>(intermediate_point) - circle_center);
+            auto vec_from_center = (intermediate_point.point - circle_center);
             auto dist_from_center = vec_from_center.norm();
             if(dist_from_center < robot_radius){
               should_continue = true;
@@ -557,7 +951,7 @@ namespace sfframework
           // filter out the occluded points contained within the filled gap
           for (int step = 1; step < j; step++) {
             int target_idx_k = (i + step) % circle_subdivisions;
-            std::get<3>(radial_buckets[target_idx_k]) = -1;
+            radial_buckets[target_idx_k].metadata = -1;
           }
 
           // skip ahead over the newly filled virtual points to prevent recursive shadow casting
@@ -568,7 +962,7 @@ namespace sfframework
       }
 
       for (int i = static_cast<int>(radial_buckets.size()) - 1; i >= 0; --i) {
-        if (std::get<3>(radial_buckets[i]) == -1) {
+        if (radial_buckets[i].metadata == -1) {
           radial_buckets.erase(radial_buckets.begin() + i);
         }
       }
@@ -598,7 +992,7 @@ namespace sfframework
 
           std::list<Kernel::Point_2> polyline;
           for (std::size_t k = begin_idx; k < end_idx; ++k) {
-            const auto& point = std::get<2>(radial_buckets[k]);
+            const auto& point = radial_buckets[k].point;
             polyline.emplace_back(point.x(), point.y());
           }
 
@@ -636,7 +1030,7 @@ namespace sfframework
           }
 
           for (std::size_t k = begin_idx; k < end_idx; ++k) {
-            const auto& original_point = std::get<2>(radial_buckets[k]);
+            const auto& original_point = radial_buckets[k].point;
             bool kept_by_simplification = false;
             for (const auto& simplified_point : simplified_points) {
               if ((simplified_point - original_point).squaredNorm() < epsilon) {
@@ -646,20 +1040,20 @@ namespace sfframework
             }
 
             if (!kept_by_simplification) {
-              std::get<3>(radial_buckets[k]) = kSimplifiedOutMetadata;
+              radial_buckets[k].metadata = kSimplifiedOutMetadata;
             }
           }
         };
 
         std::size_t idx = 0;
         while (idx < radial_buckets.size()) {
-          if (std::get<3>(radial_buckets[idx]) != 0) {
+          if (radial_buckets[idx].metadata != 0) {
             ++idx;
             continue;
           }
 
           std::size_t run_begin = idx;
-          while (idx < radial_buckets.size() && std::get<3>(radial_buckets[idx]) == 0) {
+          while (idx < radial_buckets.size() && radial_buckets[idx].metadata == 0) {
             ++idx;
           }
           mark_simplified_out_obstacle_run(run_begin, idx);

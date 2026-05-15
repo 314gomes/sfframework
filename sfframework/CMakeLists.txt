@@ -22,6 +22,7 @@ find_package(grid_map_ros REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(imu_transformer)
 find_package(Open3D REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -153,6 +154,18 @@ install(FILES sfframework_filter_plugins.xml sfframework_partitioner_plugins.xml
 pluginlib_export_plugin_description_file(sfframework sfframework_filter_plugins.xml)
 pluginlib_export_plugin_description_file(sfframework sfframework_partitioner_plugins.xml)
 pluginlib_export_plugin_description_file(sfframework sfframework_sf_plugins.xml)
+
+set(msg_files
+  "msg/StochasticVertex.msg"
+  "msg/CompressedHapticMap.msg"
+)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  ${msg_files}
+  DEPENDENCIES std_msgs
+)
+
+ament_export_dependencies(rosidl_default_runtime)
 
 
 target_include_directories(sfgenerator PUBLIC

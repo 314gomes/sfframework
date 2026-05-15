@@ -24,12 +24,13 @@
 #include <CGAL/Constrained_triangulation_face_base_2.h>
 #include <CGAL/Constrained_triangulation_plus_2.h>
 #include <CGAL/Triangulation_data_structure_2.h>
+#include <CGAL/Triangulation_vertex_base_with_info_2.h>
 #include <CGAL/Polyline_simplification_2/Vertex_base_2.h>
 #include <CGAL/Polyline_simplification_2/simplify.h>
-#include <CGAL/Polyline_simplification_2/Squared_distance_cost.h>
 #include <CGAL/Polyline_simplification_2/Stop_above_cost_threshold.h>
 
 #if __has_include("tf2_sensor_msgs/tf2_sensor_msgs.hpp")
+  #include <boost/optional.hpp>
   #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
 #elif __has_include("imu_transformer/tf2_sensor_msgs.h")
   #include "imu_transformer/tf2_sensor_msgs.h"
@@ -37,6 +38,124 @@
 
 namespace sfframework
 {
+struct RadialBucketPoint
+{
+  double angle = 0.0;
+  double distance_sq = 0.0;
+  Eigen::Vector2d point = Eigen::Vector2d::Zero();
+  int metadata = 0;
+  int dbscan_label = -1;
+  // Selected cluster for this slice: label of the cluster whose centroid
+  // is closest to the sensor origin (in XY). -1 if none.
+  int selected_dbscan_label = -1;
+  // Centroid of the selected cluster (3D) and full 3x3 covariance.
+  Eigen::Vector3d selected_dbscan_centroid = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d selected_dbscan_covariance = Eigen::Matrix3d::Zero();
+  Eigen::Vector3d selected_dbscan_eigenvalues = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d selected_dbscan_eigenvectors = Eigen::Matrix3d::Zero();
+  Eigen::Matrix3d selected_dbscan_precision = Eigen::Matrix3d::Zero();
+};
+
+class RadialBucketMahalanobisCost {
+public:
+  RadialBucketMahalanobisCost() = default;
+
+  RadialBucketMahalanobisCost(
+    const std::vector<RadialBucketPoint>* buckets)
+  : buckets_(buckets)
+  {
+  }
+
+  template <typename Constrained_triangulation, typename VertexIterator>
+  boost::optional<typename Constrained_triangulation::Geom_traits::FT>
+  operator()(Constrained_triangulation &ct, VertexIterator u) const
+  {
+    using FT = typename Constrained_triangulation::Geom_traits::FT;
+    // `u` is an iterator over the vertices in the current constraint; it
+    // points to the vertex considered for removal. We must compute the cost
+    // as the squared distance from that vertex to the segment formed by its
+    // predecessor and successor along the constraint.
+
+    // Dereference to obtain the current vertex handle
+    auto vh = *u;
+    if (ct.is_infinite(vh)) return boost::optional<FT>();
+
+    // Obtain previous and next iterators (bidirectional)
+    VertexIterator it_prev = u;
+    VertexIterator it_next = u;
+    --it_prev;
+    ++it_next;
+
+    auto vh_prev = *it_prev;
+    auto vh_next = *it_next;
+
+    if (ct.is_infinite(vh_prev) || ct.is_infinite(vh_next)) {
+      return boost::optional<FT>();
+    }
+
+    // Extract points and convert to double for arithmetic
+    auto p_mid = vh->point();
+    auto p1 = vh_prev->point();
+    auto p3 = vh_next->point();
+
+    Eigen::Vector3d p1_eig(CGAL::to_double(p1.x()), CGAL::to_double(p1.y()), 0.0);
+    Eigen::Vector3d p_mid_eig(CGAL::to_double(p_mid.x()), CGAL::to_double(p_mid.y()), 0.0);
+    Eigen::Vector3d p3_eig(CGAL::to_double(p3.x()), CGAL::to_double(p3.y()), 0.0);
+
+    auto line_vec = p3_eig - p1_eig;
+
+    auto point_vec = p_mid_eig - p1_eig;
+
+    auto projection_scalar = point_vec.dot(line_vec)/line_vec.squaredNorm();
+
+    auto projection_point = p1_eig + projection_scalar * line_vec;
+
+    auto distance_vector = projection_point - p_mid_eig;
+
+    double mahalanobis_distance_squared = std::numeric_limits<double>::infinity();
+    bool has_eigendecomposition = false;
+    Eigen::Vector3d eigenvalues = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d eigenvectors = Eigen::Matrix3d::Zero();
+    std::size_t bucket_idx = 0;
+    const RadialBucketPoint* bucket = nullptr;
+    if (buckets_) {
+      bucket_idx = vh->info();
+      if (bucket_idx < buckets_->size()) {
+        bucket = &(*buckets_)[bucket_idx];
+        eigenvalues = bucket->selected_dbscan_eigenvalues;
+        eigenvectors = bucket->selected_dbscan_eigenvectors;
+        has_eigendecomposition = eigenvalues.allFinite() && eigenvectors.allFinite();
+        if (has_eigendecomposition) {
+          constexpr double kMinEigenvalue = 1e-12;
+          double candidate = 0.0;
+          // Use truncation (Moore-Penrose pseudo-inverse): ignore near-zero eigenvalues.
+          for (int i = 0; i < 3; ++i) {
+            const double lambda = eigenvalues[i];
+            if (lambda <= kMinEigenvalue) {
+              continue;
+            }
+            const double projection = distance_vector.dot(eigenvectors.col(i));
+            candidate += (projection * projection) / lambda;
+          }
+          if (std::isfinite(candidate)) {
+            mahalanobis_distance_squared = candidate;
+          }
+        }
+      }
+    }
+
+    if (mahalanobis_distance_squared < 0.0) {
+      mahalanobis_distance_squared = 0.0;
+    }
+    const double mahalanobis_distance = std::sqrt(mahalanobis_distance_squared);
+
+    return boost::optional<FT>(static_cast<FT>(mahalanobis_distance));
+  }
+
+private:
+  const std::vector<RadialBucketPoint>* buckets_ = nullptr;
+};
+
   double epsilon = 1e-6;
 
   struct RadialSlicePoint
@@ -46,21 +165,6 @@ namespace sfframework
     Eigen::Vector3d point = Eigen::Vector3d::Zero();
     int metadata = 0;
     int dbscan_label = -1;
-  };
-
-  struct RadialBucketPoint
-  {
-    double angle = 0.0;
-    double distance_sq = 0.0;
-    Eigen::Vector2d point = Eigen::Vector2d::Zero();
-    int metadata = 0;
-    int dbscan_label = -1;
-    // Selected cluster for this slice: label of the cluster whose centroid
-    // is closest to the sensor origin (in XY). -1 if none.
-    int selected_dbscan_label = -1;
-    // Centroid of the selected cluster (3D) and full 3x3 covariance.
-    Eigen::Vector3d selected_dbscan_centroid = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d selected_dbscan_covariance = Eigen::Matrix3d::Zero();
   };
 
   class GaussianRepulsion : public SFStrategy
@@ -435,7 +539,9 @@ namespace sfframework
       node_->declare_parameter(name_ + ".slice_dbscan_eps", 0.5);
       node_->declare_parameter(name_ + ".slice_dbscan_min_points", 10);
       // Squared geometric error threshold used by CGAL simplification stop criterion.
-      node_->declare_parameter(name_ + ".simplification_squared_error_threshold", 0.0025);
+      node_->declare_parameter(name_ + ".simplification_mahalanobis_error_threshold", 0.0025);
+      // Draw covariance markers at z=0 (false) or at the actual centroid height (true).
+      node_->declare_parameter(name_ + ".covariance_markers_use_actual_z", false);
       // If empty, all metadata values are published in debug outputs.
       node_->declare_parameter(name_ + ".debug_publish_metadata_filter", std::vector<int64_t>());
 
@@ -461,8 +567,10 @@ namespace sfframework
       auto max_distance_from_seer = this->node_->get_parameter(name_ + ".max_distance").as_double();
       auto slice_dbscan_eps = this->node_->get_parameter(name_ + ".slice_dbscan_eps").as_double();
       auto slice_dbscan_min_points = this->node_->get_parameter(name_ + ".slice_dbscan_min_points").as_int();
-      auto simplification_squared_error_threshold =
-        this->node_->get_parameter(name_ + ".simplification_squared_error_threshold").as_double();
+      auto simplification_mahalanobis_error_threshold =
+        this->node_->get_parameter(name_ + ".simplification_mahalanobis_error_threshold").as_double();
+      const bool covariance_markers_use_actual_z =
+        this->node_->get_parameter(name_ + ".covariance_markers_use_actual_z").as_bool();
       const auto publish_metadata_filter_param =
         this->node_->get_parameter(name_ + ".debug_publish_metadata_filter").as_integer_array();
       std::vector<int> publish_metadata_filter;
@@ -515,7 +623,7 @@ namespace sfframework
           p_angle += 2.0 * M_PI;
           pt.angle = p_angle;
         }
-        double p_distance_sq = pt.distance_sq;
+        // double p_distance_sq = pt.distance_sq;
         
         int bucket_idx = static_cast<int>(p_angle / angle_resolution);
         if (bucket_idx >= circle_subdivisions) {
@@ -589,7 +697,7 @@ namespace sfframework
             best_label = lab;
             best_centroid3 = centroid3;
 
-            // compute full 3x3 covariance (population covariance)
+            // compute full 3x3 covariance
             Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
             const double n = static_cast<double>(cloud.points_.size());
             if (n > 0) {
@@ -624,6 +732,9 @@ namespace sfframework
         radial_buckets[i].selected_dbscan_label = -1;
         radial_buckets[i].selected_dbscan_centroid = Eigen::Vector3d::Zero();
         radial_buckets[i].selected_dbscan_covariance = Eigen::Matrix3d::Zero();
+        radial_buckets[i].selected_dbscan_eigenvalues = Eigen::Vector3d::Zero();
+        radial_buckets[i].selected_dbscan_eigenvectors = Eigen::Matrix3d::Zero();
+        radial_buckets[i].selected_dbscan_precision = Eigen::Matrix3d::Zero();
 
         // Find the closest point in this ray and project to 2D
         if (!radial_buckets_multiarray[i].empty()) {
@@ -653,6 +764,19 @@ namespace sfframework
             radial_buckets[i].distance_sq = radial_buckets[i].point.squaredNorm();
             radial_buckets[i].metadata = 0;
             radial_buckets[i].selected_dbscan_covariance = selected_covariance_per_bucket[i];
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(
+              radial_buckets[i].selected_dbscan_covariance);
+            if (solver.info() == Eigen::Success) {
+              Eigen::Vector3d evals = solver.eigenvalues();
+              Eigen::Matrix3d evecs = solver.eigenvectors();
+              for (int k = 0; k < 3; ++k) {
+                if (evals[k] < 0.0) {
+                  evals[k] = 0.0;
+                }
+              }
+              radial_buckets[i].selected_dbscan_eigenvalues = evals;
+              radial_buckets[i].selected_dbscan_eigenvectors = evecs;
+            }
           }
 
         }
@@ -755,10 +879,14 @@ namespace sfframework
             m.type = visualization_msgs::msg::Marker::SPHERE;
             m.action = visualization_msgs::msg::Marker::ADD;
 
+            const double marker_z = covariance_markers_use_actual_z
+              ? rb.selected_dbscan_centroid.z()
+              : 0.0;
+
             // Position
             m.pose.position.x = rb.selected_dbscan_centroid.x();
             m.pose.position.y = rb.selected_dbscan_centroid.y();
-            m.pose.position.z = rb.selected_dbscan_centroid.z();
+            m.pose.position.z = marker_z;
 
             // Orientation from eigenvectors (rotation matrix)
             Eigen::Quaterniond q(evecs);
@@ -768,14 +896,14 @@ namespace sfframework
             m.pose.orientation.w = q.w();
 
             // Scale is the axis lengths
-            m.scale.x = axes.x();
-            m.scale.y = axes.y();
-            m.scale.z = axes.z();
+            m.scale.x = axes.x() * 2.0;
+            m.scale.y = axes.y() * 2.0;
+            m.scale.z = axes.z() * 2.0;
 
             // Visual style
             m.color.r = 0.0f;
-            m.color.g = 1.0f;
-            m.color.b = 0.0f;
+            m.color.g = 0.0f;
+            m.color.b = 1.0f;
             m.color.a = 0.5f;
 
             cov_markers.markers.push_back(m);
@@ -791,11 +919,12 @@ namespace sfframework
               geometry_msgs::msg::Point p_end;
               p_start.x = center.x();
               p_start.y = center.y();
-              p_start.z = center.z();
-              Eigen::Vector3d p_end_eig = center + dir.normalized() * (len * 0.5);
+              // p_start.z = center.z();
+              p_start.z = marker_z;
+              Eigen::Vector3d p_end_eig = center + dir.normalized() * (len);
               p_end.x = p_end_eig.x();
               p_end.y = p_end_eig.y();
-              p_end.z = p_end_eig.z();
+              p_end.z = covariance_markers_use_actual_z ? p_end_eig.z() : p_end_eig.z() - center.z();
 
               visualization_msgs::msg::Marker arrow;
               arrow.header.frame_id = grid_map.getFrameId();
@@ -973,7 +1102,8 @@ namespace sfframework
       if (radial_buckets.size() > 3) {
         // CGAL kernel used by the triangulation/simplification pipeline.
         using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
-        using Vb = CGAL::Polyline_simplification_2::Vertex_base_2<Kernel>;
+        using VbBase = CGAL::Polyline_simplification_2::Vertex_base_2<Kernel>;
+        using Vb = CGAL::Triangulation_vertex_base_with_info_2<std::size_t, Kernel, VbBase>;
         using Fb = CGAL::Constrained_triangulation_face_base_2<Kernel>;
         using TDS = CGAL::Triangulation_data_structure_2<Vb, Fb>;
         // Constrained Delaunay triangulation is the geometric support used internally
@@ -1000,10 +1130,25 @@ namespace sfframework
           const bool is_closed_run = (begin_idx == 0 && end_idx == radial_buckets.size());
           const auto constraint_id = cgal_constraints.insert_constraint(polyline.begin(), polyline.end(), is_closed_run);
 
-          const auto removed_vertices = PS::simplify(
+          std::size_t info_idx = begin_idx;
+          for (auto it = cgal_constraints.vertices_in_constraint_begin(constraint_id);
+               it != cgal_constraints.vertices_in_constraint_end(constraint_id);
+               ++it) {
+            if (info_idx < end_idx) {
+              (*it)->info() = info_idx;
+              ++info_idx;
+            } else {
+              (*it)->info() = begin_idx;
+            }
+          }
+
+          const RadialBucketMahalanobisCost custom_cost(
+            &radial_buckets);
+            
+          auto removed_vertices = PS::simplify(
             cgal_constraints,
-            PS::Squared_distance_cost(),
-            PS::Stop_above_cost_threshold(simplification_squared_error_threshold));
+            custom_cost,
+            PS::Stop_above_cost_threshold(simplification_mahalanobis_error_threshold));
           (void)removed_vertices;
 
           std::vector<Eigen::Vector2d> simplified_points;

@@ -30,8 +30,8 @@
       Strategy to compute the inclination of a plane using linear acceleration data from an IMU.
     </description>
   </class>
-  <!-- sfframework::DistanceField1 -->
-  <class name="sfframework/DistanceField1" type="sfframework::DistanceField1" base_class_type="sfframework::SFStrategy">
+  <!-- sfframework::CompressedStochasticPolygon -->
+  <class name="sfframework/CompressedStochasticPolygon" type="sfframework::CompressedStochasticPolygon" base_class_type="sfframework::SFStrategy">
     <description>
       Strategy to compute a distance field from the input point cloud.
     </description>

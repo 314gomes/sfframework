@@ -99,7 +99,15 @@ target_include_directories(sfframework_default_partitioners PUBLIC
 
 
 # Build the scalar field plugin library
-add_library(sfframework_default_sf_strategies SHARED src/default_sf_strategies.cpp src/sfgenerator_utils.cpp)
+add_library(sfframework_default_sf_strategies SHARED
+  src/gaussian_repulsion_strategy.cpp
+  src/compressed_stochastic_polygon_strategy.cpp
+  src/parabolic_rest_strategy.cpp
+  src/weighted_summation_strategy.cpp
+  src/plane_inclination_strategy.cpp
+  src/plane_inclination_from_imu_linear_strategy.cpp
+  src/sfgenerator_utils.cpp
+)
 
 target_link_libraries(sfframework_default_sf_strategies
   Open3D::Open3D

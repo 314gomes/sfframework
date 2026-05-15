@@ -6,9 +6,9 @@ float32 x
 float32 y
 
 # Constants for the semantic state of the edge starting at this vertex
-uint8 STATE_OBSTACLE=0     # A physical barrier (apply haptic force)
-uint8 STATE_FREE_SPACE=1   # Open space, sensor reached max range (no force)
-uint8 STATE_OCCLUDED=2     # Blind spot or missing data (optional: apply "spongy" warning force)
+uint8 STATE_OBSTACLE=0     # A physical barrier
+uint8 STATE_FREE_SPACE=1   # Open space, sensor reached max range
+uint8 STATE_OCCLUDED=2     # Blind spot or missing data
 
 # The state flag for the edge from this vertex to the next
 uint8 state
